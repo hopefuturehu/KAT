@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
+from nanobot.agent.extensions import AgentExtension
 from nanobot.agent.tools.base import Tool, tool_parameters
 from nanobot.agent.tools.context import ContextAware, RequestContext
 from nanobot.agent.tools.schema import StringSchema, tool_parameters_schema
-
-if TYPE_CHECKING:
-    from nanobot.agent.tuning.manager import TuningSessionManager
 
 
 @tool_parameters(
@@ -39,8 +37,9 @@ class TuneTool(Tool, ContextAware):
     """
 
     _scopes = {"core"}
+    _plugin_discoverable = False  # Registered via TuningExtension.get_tool_classes()
 
-    def __init__(self, manager: "TuningSessionManager"):
+    def __init__(self, manager: AgentExtension | None):
         self._manager = manager
         self._origin_channel: ContextVar[str] = ContextVar("tune_origin_channel", default="cli")
         self._origin_chat_id: ContextVar[str] = ContextVar("tune_origin_chat_id", default="direct")
@@ -48,7 +47,7 @@ class TuneTool(Tool, ContextAware):
 
     @classmethod
     def create(cls, ctx: Any) -> Tool:
-        return cls(manager=ctx.tuning_manager)
+        return cls(manager=ctx.extensions.get("tuning"))
 
     def set_context(self, ctx: RequestContext) -> None:
         self._origin_channel.set(ctx.channel)
@@ -96,7 +95,11 @@ class TuneTool(Tool, ContextAware):
         if extras:
             full_task = task + "\n\nConnection details:\n" + "\n".join(extras)
 
-        return await self._manager.handle_tune_request(
+        if self._manager is None:
+            raise RuntimeError("tuning extension is not available")
+
+        return await self._manager.invoke(
+            "tune_request",
             task=full_task,
             user_response=response,
             session_key=session_key,
