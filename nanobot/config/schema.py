@@ -92,6 +92,15 @@ class ModelPresetConfig(Base):
         )
 
 
+class TuningConfig(Base):
+    """Configuration for the TuningAgent subsystem."""
+
+    enabled: bool = True
+    max_trials: int = Field(default=30, ge=1, le=200)
+    max_duration_hours: float = Field(default=8.0, ge=0.5, le=72.0)
+    default_risk_level: str = "medium"  # low / medium / high
+
+
 class AgentDefaults(Base):
     """Default agent configuration."""
 
@@ -140,6 +149,7 @@ class AgentDefaults(Base):
         serialization_alias="consolidationRatio",
     )  # Consolidation target ratio (0.5 = 50% of budget retained after compression)
     dream: DreamConfig = Field(default_factory=DreamConfig)
+    tuning: TuningConfig = Field(default_factory=TuningConfig)
 
 
 class AgentsConfig(Base):

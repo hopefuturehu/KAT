@@ -27,6 +27,7 @@ class ToolContext:
     workspace: str
     bus: Any | None = None
     subagent_manager: Any | None = None
+    tuning_manager: Any | None = None
     cron_service: Any | None = None
     file_state_store: Any = field(default=None)
     provider_snapshot_loader: Callable[[], Any] | None = None

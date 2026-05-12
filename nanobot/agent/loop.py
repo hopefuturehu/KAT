@@ -22,6 +22,7 @@ from nanobot.agent.memory import Consolidator, Dream
 from nanobot.agent import model_presets as preset_helpers
 from nanobot.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec
 from nanobot.agent.subagent import SubagentManager
+from nanobot.agent.tuning.manager import TuningSessionManager
 from nanobot.agent.tools.ask import (
     ask_user_options_from_messages,
     ask_user_outbound,
@@ -363,6 +364,13 @@ class AgentLoop:
             disabled_skills=disabled_skills,
             max_iterations=self.max_iterations,
         )
+        self.tuning = TuningSessionManager(
+            provider=provider,
+            workspace=workspace,
+            bus=bus,
+            model=self.model,
+            max_tool_result_chars=self.max_tool_result_chars,
+        )
         self._unified_session = unified_session
         self._max_messages = max_messages if max_messages > 0 else 120
         self._running = False
@@ -489,6 +497,7 @@ class AgentLoop:
         self.context_window_tokens = context_window_tokens
         self.runner.provider = provider
         self.subagents.set_provider(provider, model)
+        self.tuning.set_provider(provider, model)
         self.consolidator.set_provider(provider, model, context_window_tokens)
         self.dream.set_provider(provider, model)
         self._provider_signature = snapshot.signature
@@ -556,6 +565,7 @@ class AgentLoop:
             workspace=str(self.workspace),
             bus=self.bus,
             subagent_manager=self.subagents,
+            tuning_manager=self.tuning,
             cron_service=self.cron_service,
             provider_snapshot_loader=self._provider_snapshot_loader,
             image_generation_provider_configs=self._image_generation_provider_configs,
@@ -1196,8 +1206,19 @@ class AgentLoop:
             replay_max_messages=self._max_messages,
         )
         is_subagent = msg.sender_id == "subagent"
+        is_tuning = msg.sender_id == "tuning"
+        is_background_result = is_subagent or is_tuning
         if is_subagent and self._persist_subagent_followup(session, msg):
             logger.debug("Subagent result persisted for session {}", key)
+            self.sessions.save(session)
+        if is_tuning:
+            # Persist tuning result as a system message in history
+            session.append_message({
+                "role": "system",
+                "content": msg.content,
+                "timestamp": msg.timestamp,
+                "metadata": msg.metadata,
+            })
             self.sessions.save(session)
         self._set_tool_context(
             channel, chat_id, msg.metadata.get("message_id"),
@@ -1209,11 +1230,11 @@ class AgentLoop:
             "include_timestamps": True,
         }
         history = session.get_history(**_hist_kwargs)
-        current_role = "assistant" if is_subagent else "user"
+        current_role = "assistant" if is_background_result else "user"
 
         messages = self.context.build_messages(
             history=history,
-            current_message="" if is_subagent else msg.content,
+            current_message="" if is_background_result else msg.content,
             channel=channel,
             chat_id=chat_id,
             current_role=current_role,
