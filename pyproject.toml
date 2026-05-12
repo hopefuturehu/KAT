@@ -97,6 +97,21 @@ pdf = [
 olostep = [
     "olostep>=0.1.0",
 ]
+tuning = [
+    "chromadb>=0.5.0",
+    "langgraph>=0.2.0",
+    "langchain>=0.3.0",
+    "langchain-anthropic>=0.2.0",
+    "instructor>=1.4.0",
+    "sqlalchemy>=2.0.0",
+    "alembic>=1.13.0",
+    "aiosqlite>=0.20.0",
+    "docker>=7.0.0",
+    "structlog>=23.0.0",
+    "plotly>=5.18.0",
+    "optuna>=4.0.0",
+    "scikit-optimize>=0.10.0",
+]
 dev = [
     "pytest>=9.0.0,<10.0.0",
     "pytest-asyncio>=1.3.0,<2.0.0",
@@ -127,6 +142,11 @@ include = [
     "nanobot/templates/**/*.md",
     "nanobot/skills/**/*.md",
     "nanobot/skills/**/*.sh",
+    "_llm_tuner/**/*.py",
+    "_llm_tuner/**/*.json",
+    "_llm_tuner/**/*.j2",
+    "_llm_tuner/**/*.yaml",
+    "_llm_tuner/**/*.yml",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -137,11 +157,13 @@ packages = ["nanobot"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "bridge" = "nanobot/bridge"
+"_llm_tuner" = "nanobot/_llm_tuner"
 
 [tool.hatch.build.targets.sdist]
 include = [
     "nanobot/",
     "bridge/",
+    "_llm_tuner/",
     "README.md",
     "LICENSE",
     "THIRD_PARTY_NOTICES.md",

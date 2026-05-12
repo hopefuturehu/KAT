@@ -1,0 +1,271 @@
+{
+  "system": "redis",
+  "version": "7.2",
+  "parameters": [
+    {
+      "name": "maxmemory",
+      "category": "memory",
+      "description": "Maximum memory Redis can use. Setting appropriate value prevents OOM kills.",
+      "default_value": "0",
+      "type": "integer",
+      "min_value": "0",
+      "max_value": null,
+      "restart_required": false,
+      "risk": "low",
+      "notes": "0 means unlimited. Set to ~70% of available RAM for production."
+    },
+    {
+      "name": "maxmemory-policy",
+      "category": "memory",
+      "description": "Eviction policy when maxmemory is reached.",
+      "default_value": "noeviction",
+      "type": "enum",
+      "enum_values": ["noeviction", "allkeys-lru", "allkeys-lfu", "allkeys-random", "volatile-lru", "volatile-lfu", "volatile-random", "volatile-ttl"],
+      "restart_required": false,
+      "risk": "low",
+      "notes": "allkeys-lru or allkeys-lfu recommended for cache workloads."
+    },
+    {
+      "name": "io-threads",
+      "category": "io",
+      "description": "Number of I/O threads for multi-threaded I/O processing.",
+      "default_value": "1",
+      "type": "integer",
+      "min_value": "1",
+      "max_value": "16",
+      "restart_required": true,
+      "risk": "medium",
+      "notes": "Set to 2-4 on multi-core machines. More than 4 rarely helps."
+    },
+    {
+      "name": "io-threads-do-reads",
+      "category": "io",
+      "description": "Enable multi-threading for read queries as well.",
+      "default_value": "no",
+      "type": "boolean",
+      "restart_required": true,
+      "risk": "medium",
+      "notes": "Enable only if io-threads > 1."
+    },
+    {
+      "name": "appendonly",
+      "category": "persistence",
+      "description": "Enable Append-Only File persistence.",
+      "default_value": "no",
+      "type": "boolean",
+      "restart_required": false,
+      "risk": "medium",
+      "depends_on": [],
+      "conflicts_with": [],
+      "notes": "Disable for pure in-memory performance. Enable for durability."
+    },
+    {
+      "name": "appendfsync",
+      "category": "persistence",
+      "description": "AOF fsync policy. always=every write, everysec=once per second, no=OS decides.",
+      "default_value": "everysec",
+      "type": "enum",
+      "enum_values": ["always", "everysec", "no"],
+      "restart_required": false,
+      "risk": "medium",
+      "notes": "always is safest but slowest. no is fastest but risks data loss."
+    },
+    {
+      "name": "aof-use-rdb-preamble",
+      "category": "persistence",
+      "description": "Use RDB preamble for AOF rewrite (hybrid persistence).",
+      "default_value": "yes",
+      "type": "boolean",
+      "restart_required": false,
+      "risk": "low"
+    },
+    {
+      "name": "save",
+      "category": "persistence",
+      "description": "RDB snapshot save rules. Format: 'seconds changes'. Set '' to disable.",
+      "default_value": "3600 1 300 100 60 10000",
+      "type": "string",
+      "restart_required": false,
+      "risk": "low",
+      "notes": "Disable (save '') to eliminate fork overhead for pure caching use cases."
+    },
+    {
+      "name": "activerehashing",
+      "category": "memory",
+      "description": "Active rehashing of main hash tables. Uses CPU time but prevents latency spikes.",
+      "default_value": "yes",
+      "type": "boolean",
+      "restart_required": false,
+      "risk": "low"
+    },
+    {
+      "name": "lazyfree-lazy-eviction",
+      "category": "memory",
+      "description": "Perform eviction deletes asynchronously.",
+      "default_value": "no",
+      "type": "boolean",
+      "restart_required": false,
+      "risk": "low"
+    },
+    {
+      "name": "lazyfree-lazy-expire",
+      "category": "memory",
+      "description": "Perform expired key deletes asynchronously.",
+      "default_value": "no",
+      "type": "boolean",
+      "restart_required": false,
+      "risk": "low"
+    },
+    {
+      "name": "lazyfree-lazy-server-del",
+      "category": "memory",
+      "description": "Perform side-effect deletes (e.g. RENAME) asynchronously.",
+      "default_value": "no",
+      "type": "boolean",
+      "restart_required": false,
+      "risk": "low"
+    },
+    {
+      "name": "hz",
+      "category": "general",
+      "description": "Frequency of internal background tasks (cron) in Hz.",
+      "default_value": "10",
+      "type": "integer",
+      "min_value": "1",
+      "max_value": "500",
+      "restart_required": false,
+      "risk": "low",
+      "notes": "Higher values trade CPU for lower latency on expiry/eviction."
+    },
+    {
+      "name": "databases",
+      "category": "memory",
+      "description": "Number of logical databases. Fewer databases reduce memory overhead.",
+      "default_value": "16",
+      "type": "integer",
+      "min_value": "1",
+      "max_value": "1000",
+      "restart_required": false,
+      "risk": "low"
+    },
+    {
+      "name": "tcp-backlog",
+      "category": "network",
+      "description": "TCP listen backlog for incoming connections.",
+      "default_value": "511",
+      "type": "integer",
+      "min_value": "1",
+      "max_value": "65535",
+      "restart_required": true,
+      "risk": "low",
+      "notes": "Increase for high-connection-rate scenarios."
+    },
+    {
+      "name": "tcp-keepalive",
+      "category": "network",
+      "description": "TCP keep-alive interval in seconds.",
+      "default_value": "300",
+      "type": "integer",
+      "min_value": "0",
+      "max_value": "86400",
+      "restart_required": false,
+      "risk": "low"
+    },
+    {
+      "name": "timeout",
+      "category": "connections",
+      "description": "Close connection after N seconds of idle. 0 = no timeout.",
+      "default_value": "0",
+      "type": "integer",
+      "min_value": "0",
+      "max_value": "86400",
+      "restart_required": false,
+      "risk": "low"
+    },
+    {
+      "name": "repl-disable-tcp-nodelay",
+      "category": "network",
+      "description": "Disable TCP_NODELAY on replication connections. 'no' = less latency.",
+      "default_value": "no",
+      "type": "boolean",
+      "restart_required": false,
+      "risk": "low"
+    },
+    {
+      "name": "maxclients",
+      "category": "connections",
+      "description": "Maximum number of simultaneous client connections.",
+      "default_value": "10000",
+      "type": "integer",
+      "min_value": "1",
+      "max_value": "1000000",
+      "restart_required": false,
+      "risk": "low"
+    },
+    {
+      "name": "slowlog-log-slower-than",
+      "category": "logging",
+      "description": "Log queries slower than N microseconds. -1 disables slowlog.",
+      "default_value": "10000",
+      "type": "integer",
+      "min_value": "-1",
+      "max_value": "99999999",
+      "restart_required": false,
+      "risk": "low",
+      "notes": "Set -1 for maximum performance (disables slowlog overhead)."
+    },
+    {
+      "name": "latency-monitor-threshold",
+      "category": "logging",
+      "description": "Latency monitor threshold in milliseconds. 0 disables it.",
+      "default_value": "0",
+      "type": "integer",
+      "min_value": "0",
+      "max_value": "86400000",
+      "restart_required": false,
+      "risk": "low"
+    },
+    {
+      "name": "repl-backlog-size",
+      "category": "replication",
+      "description": "Replication backlog buffer size in bytes.",
+      "default_value": "1048576",
+      "type": "integer",
+      "min_value": "16384",
+      "max_value": null,
+      "restart_required": false,
+      "risk": "low",
+      "notes": "Larger backlog helps partial resyncs. Default 1MB. Set to 64MB+ for heavy write loads."
+    },
+    {
+      "name": "client-output-buffer-limit",
+      "category": "connections",
+      "description": "Output buffer limits for different client classes.",
+      "default_value": "normal 0 0 0",
+      "type": "string",
+      "restart_required": false,
+      "risk": "medium",
+      "notes": "Format: <class> <hard limit> <soft limit> <soft seconds>"
+    },
+    {
+      "name": "rename-command",
+      "category": "general",
+      "description": "Rename or disable commands. Set to '' to disable.",
+      "default_value": "",
+      "type": "string",
+      "restart_required": true,
+      "risk": "critical",
+      "notes": "Security-critical: disabling FLUSHDB/FLUSHALL/CONFIG is recommended for production."
+    },
+    {
+      "name": "requirepass",
+      "category": "general",
+      "description": "Require password authentication.",
+      "default_value": "",
+      "type": "string",
+      "restart_required": true,
+      "risk": "critical",
+      "notes": "Security-critical parameter."
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+version: "3.9"
+services:
+  mysql:
+    image: {{ image | default("mysql:8.0") }}
+    ports:
+      - "{{ host_port | default(3306) }}:3306"
+    mem_limit: {{ memory_limit | default("8g") }}
+    cpus: "{{ cpu_limit | default(4) }}"
+    environment:
+      MYSQL_ROOT_PASSWORD: {{ root_password | default("llmtuner123") }}
+      MYSQL_DATABASE: {{ database | default("benchmark") }}
+    volumes:
+      - {{ config_mount | default("./my.cnf") }}:/etc/mysql/conf.d/custom.cnf:ro
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  mysql_data:
