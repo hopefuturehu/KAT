@@ -89,3 +89,4 @@ class TuningSession:
     progress_messages: list[str] = field(default_factory=list)
     final_report: str = ""
     error: str = ""
+    _intake_conversation: list[dict[str, Any]] = field(default_factory=list)

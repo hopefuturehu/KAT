@@ -81,6 +81,34 @@ async def _setup_direct_mode(state: Any, req: TuningRequirements) -> None:
         )
 
 
+def _check_dependencies(mode: str) -> list[str]:
+    """Verify all llm-tuner dependencies are importable.  Returns missing packages."""
+    missing: list[str] = []
+
+    # Base deps needed regardless of mode
+    for pkg_name, import_name in [
+        ("structlog", "structlog"),
+        ("langgraph", "langgraph"),
+        ("langchain", "langchain"),
+        ("langchain_anthropic", "langchain_anthropic"),
+        ("instructor", "instructor"),
+        ("optuna", "optuna"),
+        ("skopt", "skopt"),
+    ]:
+        try:
+            __import__(import_name)
+        except ImportError:
+            missing.append(pkg_name)
+
+    if mode == "docker":
+        try:
+            __import__("docker")
+        except ImportError:
+            missing.append("docker")
+
+    return missing
+
+
 async def run_execution(
     session: TuningSession,
     workspace: str,
@@ -91,6 +119,18 @@ async def run_execution(
     """
     req = session.requirements
 
+    # Pre-flight dependency check (fail fast, before intake turns are wasted)
+    mode = "direct" if (req.host and req.config_file) else "docker"
+    missing = _check_dependencies(mode)
+    if missing:
+        msg = (
+            f"Missing packages for tuning ({mode} mode): {', '.join(missing)}\n\n"
+            f"Install with:  pip install nanobot[tuning]\n"
+            f"Or re-run with:  pip install {' '.join(missing)}"
+        )
+        logger.error(msg)
+        return f"## Tuning Failed\n\n{msg}"
+
     try:
         state = await _build_experiment_state(req)
 
@@ -99,7 +139,22 @@ async def run_execution(
             await _setup_direct_mode(state, req)
         else:
             # Docker mode: provision container
-            from src.environment.manager import TargetEnvironmentManager, EnvironmentConfig
+            try:
+                from src.environment.manager import (
+                    TargetEnvironmentManager,
+                    EnvironmentConfig,
+                )
+            except ImportError as e:
+                msg = (
+                    "Docker Python SDK is required for container-based tuning.\n\n"
+                    "Options:\n"
+                    "1. Install docker:  pip install nanobot[tuning]\n"
+                    "2. Use direct-connect mode by providing host and config_file:\n"
+                    '   tune_start(task="...", host="127.0.0.1", '
+                    'port="6379", config_file="/opt/homebrew/etc/redis.conf")\n'
+                )
+                logger.warning(msg)
+                raise RuntimeError(msg) from e
 
             env_config = EnvironmentConfig(
                 template=f"{req.target_system}-standalone",

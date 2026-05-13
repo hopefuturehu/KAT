@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +12,7 @@ from loguru import logger
 
 from nanobot.agent.runner import AgentRunner
 from nanobot.agent.tuning.intake import run_intake_turn
-from nanobot.agent.tuning.schema import TuningPhase, TuningRequirements, TuningSession
+from nanobot.agent.tuning.schema import TuningPhase, TuningSession
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
@@ -27,15 +28,22 @@ class TuningSessionManager:
         bus: MessageBus,
         model: str | None = None,
         max_tool_result_chars: int = 16000,
+        schedule_background: Callable[[Awaitable[Any]], asyncio.Task[Any]] | None = None,
     ):
         self.provider = provider
         self.workspace = workspace
         self.bus = bus
         self.model = model or provider.get_default_model()
         self.max_tool_result_chars = max_tool_result_chars
+        self._schedule_background = schedule_background
         self.runner = AgentRunner(provider)
         self._sessions: dict[str, TuningSession] = {}  # session_key -> session
         self._intake_locks: dict[str, asyncio.Lock] = {}
+
+    def _spawn_background(self, coro: Awaitable[Any]) -> asyncio.Task[Any]:
+        if self._schedule_background is not None:
+            return self._schedule_background(coro)
+        return asyncio.create_task(coro)
 
     def set_provider(self, provider: LLMProvider, model: str) -> None:
         self.provider = provider
@@ -63,11 +71,33 @@ class TuningSessionManager:
         On first call (no user_response), starts intake conversation.
         On subsequent calls (with user_response), continues intake.
         When requirements are complete, spawns execution phase.
+        If a previous execution failed, retries without redoing intake.
         """
         lock = self._get_lock(session_key)
 
         async with lock:
             session = self._sessions.get(session_key)
+
+            # If session exists and already has requirements, retry execution
+            if session is not None and session.phase in (
+                TuningPhase.EXECUTION,
+                TuningPhase.ERROR,
+            ):
+                if session.phase == TuningPhase.ERROR:
+                    session.phase = TuningPhase.EXECUTION
+                self._spawn_background(
+                    self._run_execution_and_report(
+                        session, session_key, origin_channel, origin_chat_id
+                    )
+                )
+                return (
+                    f"Retrying tuning execution with existing requirements:\n\n"
+                    f"- Target: {session.requirements.target_system} "
+                    f"{session.requirements.target_version}\n"
+                    f"- Goals: {', '.join(f'{g.metric} {g.operator} {g.value}' for g in session.requirements.goals)}\n"
+                    f"- Max Trials: {session.requirements.max_trials}\n"
+                    f"Tuning is running in the background. You will be notified when it completes."
+                )
 
             if session is None:
                 # First call: create session and start intake
@@ -81,14 +111,11 @@ class TuningSessionManager:
                 ]
             elif user_response:
                 # Continue intake with user's response
-                session = self._sessions[session_key]
-                conversation = getattr(session, "_intake_conversation", [])
+                conversation = session._intake_conversation
                 conversation.append({"role": "user", "content": user_response})
             else:
                 # No response provided, re-state current status
-                conversation = getattr(session, "_intake_conversation", [
-                    {"role": "user", "content": task},
-                ])
+                conversation = session._intake_conversation
 
             response, updated_conversation, requirements = await run_intake_turn(
                 runner=self.runner,
@@ -98,7 +125,7 @@ class TuningSessionManager:
                 conversation=conversation,
                 max_tool_result_chars=self.max_tool_result_chars,
             )
-            setattr(session, "_intake_conversation", updated_conversation)
+            session._intake_conversation = updated_conversation
 
             if requirements is not None:
                 # Requirements complete — transition to execution
@@ -106,7 +133,7 @@ class TuningSessionManager:
                 session.phase = TuningPhase.EXECUTION
 
                 # Spawn execution in background
-                asyncio.create_task(
+                self._spawn_background(
                     self._run_execution_and_report(
                         session, session_key, origin_channel, origin_chat_id
                     )
@@ -174,6 +201,7 @@ class TuningSessionManager:
         await self.bus.publish_inbound(msg)
         logger.info("Tuning session [{}] announced result", session.task_id)
 
-        # Cleanup session
-        self._sessions.pop(session_key, None)
-        self._intake_locks.pop(session_key, None)
+        # Cleanup session on success only — keep on error so retry reuses intake
+        if session.phase == TuningPhase.DONE:
+            self._sessions.pop(session_key, None)
+            self._intake_locks.pop(session_key, None)

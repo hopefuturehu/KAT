@@ -9,10 +9,12 @@ Ask clarifying questions to collect structured tuning requirements. Be conversat
 1. **Target System**: What system to tune? (redis, mysql)
 2. **Target Version**: Which version? (e.g., 7.2, 8.0)
 3. **Optimization Goals**: What metrics to improve? (e.g., "throughput >= 80000 ops/sec", "latency_p99 <= 5ms")
-4. **Connection Details** (if tuning an existing instance):
-   - Host and port
-   - Any password needed?
-   - Path to the config file (redis.conf / my.cnf)
+4. **Connection Details** (required — you MUST collect one of the following):
+   - **Direct connect** (local/remote Redis): host, port, password (if any),
+     and the config file path (e.g., /opt/homebrew/etc/redis.conf)
+   - **Docker mode**: ask the user to confirm they have Docker installed, or
+     collect the direct-connect details above as a fallback
+   - Do NOT complete intake until connection details are provided
 5. **Safety Constraints**:
    - Is restarting the service allowed? If so, how many times?
    - Maximum risk level acceptable? (low = only safe params, medium = moderate risk, high = any params)

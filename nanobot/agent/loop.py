@@ -22,7 +22,7 @@ from nanobot.agent.memory import Consolidator, Dream
 from nanobot.agent import model_presets as preset_helpers
 from nanobot.agent.runner import _MAX_INJECTIONS_PER_TURN, AgentRunner, AgentRunSpec
 from nanobot.agent.subagent import SubagentManager
-from nanobot.agent.extensions import AgentExtension, ExtensionContext, discover_extensions
+from nanobot.agent.tuning.router import TuningIntentRouter
 from nanobot.agent.tools.ask import (
     ask_user_options_from_messages,
     ask_user_outbound,
@@ -364,28 +364,14 @@ class AgentLoop:
             disabled_skills=disabled_skills,
             max_iterations=self.max_iterations,
         )
-        # Discover and instantiate extensions (setup is deferred to run())
-        self._extensions: dict[str, AgentExtension] = {}
-        self._extension_ctxs: dict[str, ExtensionContext] = {}
-        ext_configs = getattr(defaults, "extensions", {})
-        for name, ext_cls in discover_extensions().items():
-            ext_cfg = ext_configs.get(name, {})
-            ext = ext_cls()
-            ext.name = name
-            ext.sender_id = ext.sender_id or name
-            ctx = ExtensionContext(
-                name=name,
-                provider=provider,
-                workspace=workspace,
-                bus=bus,
-                model=self.model,
-                config=ext_cfg,
-                max_tool_result_chars=self.max_tool_result_chars,
-                schedule_background=self._schedule_background,
-            )
-            self._extensions[name] = ext
-            self._extension_ctxs[name] = ctx
-            logger.info("Discovered extension: {}", name)
+        self.tuning = TuningIntentRouter(
+            provider=provider,
+            workspace=workspace,
+            bus=bus,
+            model=self.model,
+            max_tool_result_chars=self.max_tool_result_chars,
+            schedule_background=self._schedule_background,
+        )
         self._unified_session = unified_session
         self._max_messages = max_messages if max_messages > 0 else 120
         self._running = False
@@ -393,7 +379,6 @@ class AgentLoop:
         self._mcp_stacks: dict[str, AsyncExitStack] = {}
         self._mcp_connected = False
         self._mcp_connecting = False
-        self._extensions_torn_down = False
         self._active_tasks: dict[str, list[asyncio.Task]] = {}  # session_key -> tasks
         self._background_tasks: list[asyncio.Task] = []
         self._session_locks: dict[str, asyncio.Lock] = {}
@@ -513,8 +498,7 @@ class AgentLoop:
         self.context_window_tokens = context_window_tokens
         self.runner.provider = provider
         self.subagents.set_provider(provider, model)
-        for ext in self._extensions.values():
-            ext.set_provider(provider, model)
+        self.tuning.set_provider(provider, model)
         self.consolidator.set_provider(provider, model, context_window_tokens)
         self.dream.set_provider(provider, model)
         self._provider_signature = snapshot.signature
@@ -582,7 +566,6 @@ class AgentLoop:
             workspace=str(self.workspace),
             bus=self.bus,
             subagent_manager=self.subagents,
-            extensions=self._extensions,
             cron_service=self.cron_service,
             provider_snapshot_loader=self._provider_snapshot_loader,
             image_generation_provider_configs=self._image_generation_provider_configs,
@@ -960,34 +943,6 @@ class AgentLoop:
     async def run(self) -> None:
         """Run the agent loop, dispatching messages as tasks to stay responsive to /stop."""
         self._running = True
-        # Setup extensions now that SessionManager is ready
-        from nanobot.agent.tools.context import ToolContext as _ExtToolCtx
-
-        _ext_ctx = _ExtToolCtx(
-            config=self.tools_config,
-            workspace=str(self.workspace),
-            bus=self.bus,
-            subagent_manager=self.subagents,
-            extensions=self._extensions,
-            cron_service=self.cron_service,
-            provider_snapshot_loader=self._provider_snapshot_loader,
-            image_generation_provider_configs=self._image_generation_provider_configs,
-            timezone=self.context.timezone or "UTC",
-        )
-        for name, ext in self._extensions.items():
-            ext_ctx = self._extension_ctxs[name]
-            ext_ctx.session_manager = self.sessions
-            ext._bind_context(ext_ctx)
-            await ext.setup(ext_ctx)
-            for tool_cls in ext.get_tool_classes():
-                try:
-                    if not tool_cls.enabled(_ext_ctx):
-                        continue
-                    tool = tool_cls.create(_ext_ctx)
-                    self.tools.register(tool)
-                    logger.info("Registered extension tool: {} (from {})", tool.name, name)
-                except Exception:
-                    logger.exception("Failed to register extension tool %s", tool_cls.__name__)
         await self._connect_mcp()
         logger.info("Agent loop started")
 
@@ -1200,7 +1155,6 @@ class AgentLoop:
 
     async def close_mcp(self) -> None:
         """Drain pending background archives, then close MCP connections."""
-        await self._teardown_extensions()
         if self._background_tasks:
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
             self._background_tasks.clear()
@@ -1217,17 +1171,6 @@ class AgentLoop:
         self._background_tasks.append(task)
         task.add_done_callback(lambda t: self._background_tasks.remove(t) if t in self._background_tasks else None)
         return task
-
-    async def _teardown_extensions(self) -> None:
-        """Run extension teardowns exactly once."""
-        if self._extensions_torn_down:
-            return
-        self._extensions_torn_down = True
-        for ext in self._extensions.values():
-            try:
-                await ext.teardown()
-            except Exception:
-                logger.exception("Error during extension teardown: %s", ext.name)
 
     def stop(self) -> None:
         """Stop the agent loop."""
@@ -1264,20 +1207,20 @@ class AgentLoop:
             replay_max_messages=self._max_messages,
         )
         is_subagent = msg.sender_id == "subagent"
-        extension_sender_ids = {ext.sender_id for ext in self._extensions.values()}
-        is_extension_result = msg.sender_id in extension_sender_ids
-        is_background_result = is_subagent or is_extension_result
+        is_tuning_result = msg.sender_id == self.tuning.sender_id
+        is_background_result = is_subagent or is_tuning_result
         if is_subagent and self._persist_subagent_followup(session, msg):
             logger.debug("Subagent result persisted for session {}", key)
             self.sessions.save(session)
-        if is_extension_result:
-            # Persist extension result as a system message in history
-            session.append_message({
-                "role": "system",
-                "content": msg.content,
-                "timestamp": msg.timestamp,
-                "metadata": msg.metadata,
-            })
+        if is_tuning_result:
+            # Persist background tuning results into the main session.
+            session.add_message(
+                "system",
+                msg.content,
+                timestamp=msg.timestamp.isoformat(),
+                metadata=msg.metadata,
+                sender_id=msg.sender_id,
+            )
             self.sessions.save(session)
         self._set_tool_context(
             channel, chat_id, msg.metadata.get("message_id"),
@@ -1541,7 +1484,27 @@ class AgentLoop:
 
         return "ok"
 
+    async def _run_tuning_flow(self, ctx: TurnContext) -> bool:
+        response = await self.tuning.route_message(
+            message=ctx.msg.content,
+            session_key=ctx.session_key,
+            origin_channel=ctx.msg.channel,
+            origin_chat_id=ctx.msg.chat_id,
+        )
+        if response is None:
+            return False
+
+        assistant_message = {"role": "assistant", "content": response}
+        ctx.final_content = response
+        ctx.tools_used = []
+        ctx.all_messages = list(ctx.initial_messages) + [assistant_message]
+        ctx.stop_reason = "tuning"
+        ctx.had_injections = False
+        return True
+
     async def _state_run(self, ctx: TurnContext) -> str:
+        if await self._run_tuning_flow(ctx):
+            return "ok"
         result = await self._run_agent_loop(
             ctx.initial_messages,
             on_progress=ctx.on_progress,
