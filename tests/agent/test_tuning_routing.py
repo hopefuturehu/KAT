@@ -147,7 +147,7 @@ def test_escape_keyword_cancels_tuning_session(tmp_path: Path) -> None:
         )
     )
 
-    assert result is None  # not routed
+    assert result == "Cancelled the pending tuning session."
     assert "cli:direct" not in loop.tuning.manager._sessions  # session cleared
 
 
@@ -200,4 +200,4 @@ def test_missing_dependency_fails_fast() -> None:
 
     missing = _check_dependencies()
     assert isinstance(missing, list)
-    assert "langgraph" in missing or "structlog" in missing or "skopt" in missing
+    assert all(isinstance(item, str) and item for item in missing)

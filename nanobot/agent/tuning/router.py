@@ -125,8 +125,19 @@ class TuningIntentRouter:
 
         if self._looks_like_escape_request(message):
             should_route = False
-            if session is not None and self.manager.cancel_session(session_key):
+            cancel_response = None
+            if session is not None:
+                cancel_response = self.manager.cancel_session(session_key)
+            if cancel_response:
                 logger.info("User cancelled tuning session {}", session_key)
+                return {
+                    **state,
+                    "should_route": False,
+                    "route_reason": "cancel_tuning",
+                    "task": task,
+                    "user_response": user_response,
+                    "response": cancel_response,
+                }
         elif session is not None and session.phase == TuningPhase.INTAKE:
             should_route = True
             route_reason = "continue_intake"
@@ -202,7 +213,7 @@ class TuningIntentRouter:
         }
         state = self._classify_request(initial_state)
         if not state.get("should_route"):
-            return None
+            return state.get("response")
 
         graph = self._ensure_graph()
         if graph is None:

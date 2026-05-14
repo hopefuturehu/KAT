@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import contextmanager
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -18,11 +20,14 @@ from nanobot.agent.tuning.schema import TuningRequirements, TuningSession
 if TYPE_CHECKING:
     from nanobot.providers.base import LLMProvider
 
+_TUNER_EXECUTION_LOCK = asyncio.Lock()
 
+
+@contextmanager
 def _configure_tuner_llm(
     provider: "LLMProvider | None",
     model: str | None,
-) -> None:
+) -> Any:
     """Bridge nanobot provider credentials into the standalone _llm_tuner settings.
 
     The _llm_tuner package maintains its own Settings object (loaded from
@@ -31,9 +36,17 @@ def _configure_tuner_llm(
     call any LLM and fall back to Bayesian-only optimization.
     """
     if provider is None or not provider.api_key:
+        yield
         return
 
     from src.config import settings as tuner_settings
+
+    original = {
+        "deepseek_api_key": tuner_settings.deepseek_api_key,
+        "deepseek_api_base": tuner_settings.deepseek_api_base,
+        "llm_model": tuner_settings.llm_model,
+        "llm_provider": tuner_settings.llm_provider,
+    }
 
     tuner_settings.deepseek_api_key = provider.api_key
     if provider.api_base:
@@ -47,7 +60,93 @@ def _configure_tuner_llm(
         tuner_settings.llm_model,
         tuner_settings.deepseek_api_base,
     )
+    try:
+        yield
+    finally:
+        tuner_settings.deepseek_api_key = original["deepseek_api_key"]
+        tuner_settings.deepseek_api_base = original["deepseek_api_base"]
+        tuner_settings.llm_model = original["llm_model"]
+        tuner_settings.llm_provider = original["llm_provider"]
 
+
+def _check_dependencies() -> list[str]:
+    """Verify the minimal tuning dependencies required for this execution path."""
+    missing: list[str] = []
+
+    required = [
+        ("structlog", "structlog"),
+        ("langgraph", "langgraph"),
+    ]
+    optional_optimizer_imports = [
+        ("skopt", "skopt"),
+        ("optuna", "optuna"),
+    ]
+
+    for pkg_name, import_name in required:
+        try:
+            __import__(import_name)
+        except ImportError:
+            missing.append(pkg_name)
+
+    optimizer_available = False
+    for _, import_name in optional_optimizer_imports:
+        try:
+            __import__(import_name)
+            optimizer_available = True
+            break
+        except ImportError:
+            continue
+    if not optimizer_available:
+        missing.append("skopt or optuna")
+
+    return missing
+
+
+async def _execute_tuning_workflow(
+    session: TuningSession,
+    req: TuningRequirements,
+    provider: "LLMProvider | None",
+    model: str | None,
+) -> tuple[str, dict[str, Any]]:
+    async with _TUNER_EXECUTION_LOCK:
+        with _configure_tuner_llm(provider, model):
+            state = await _build_experiment_state(req)
+
+            # Load baseline config from target
+            if req.host and req.config_file:
+                await _setup_direct_mode(state, req)
+            else:
+                msg = (
+                    "Direct-connect mode requires host, port, and config file path. "
+                    "A benchmark profile can replace inline benchmark commands, but it does not "
+                    "replace the connection details needed to read and write the target config."
+                )
+                logger.error(msg)
+                return f"## Tuning Failed\n\n{msg}", {}
+
+            if req.dry_run:
+                return _format_dry_run_report(state), {}
+
+            from src.workflow.graph import create_workflow
+
+            workflow = create_workflow()
+            logger.info("starting tuning workflow: {} trials", state.max_trials)
+
+            final_event = None
+            async for event in workflow.astream(state, stream_mode="values"):
+                node_name = event.get("phase", "unknown")
+                trial_num = event.get("trial_number", 0)
+                msg = f"[Trial {trial_num}] Phase: {node_name}"
+                logger.info(msg)
+                session.progress_messages.append(msg)
+                final_event = event
+
+            if final_event:
+                state = _reconstruct_state(state, final_event)
+
+            report = _format_final_report(state, session)
+            structured = _extract_structured_results(state)
+            return report, structured
 
 async def _build_experiment_state(req: TuningRequirements) -> Any:
     """Build an ExperimentState from TuningRequirements."""
@@ -132,29 +231,6 @@ async def _setup_direct_mode(state: Any, req: TuningRequirements) -> None:
             req.config_file,
             len(state.current_config),
         )
-
-
-def _check_dependencies() -> list[str]:
-    """Verify all in-repo tuning dependencies are importable."""
-    missing: list[str] = []
-
-    for pkg_name, import_name in [
-        ("structlog", "structlog"),
-        ("langgraph", "langgraph"),
-        ("langchain", "langchain"),
-        ("langchain_anthropic", "langchain_anthropic"),
-        ("instructor", "instructor"),
-        ("optuna", "optuna"),
-        ("skopt", "skopt"),
-    ]:
-        try:
-            __import__(import_name)
-        except ImportError:
-            missing.append(pkg_name)
-
-    return missing
-
-
 async def run_execution(
     session: TuningSession,
     _workspace: str,
@@ -184,49 +260,7 @@ async def run_execution(
             logger.error(execution_issue)
             return f"## Tuning Failed\n\n{execution_issue}", {}
 
-        _configure_tuner_llm(provider, model)
-
-        state = await _build_experiment_state(req)
-
-        # Load baseline config from target
-        if req.host and req.config_file:
-            await _setup_direct_mode(state, req)
-        else:
-            msg = (
-                "Direct-connect mode requires host, port, and config file path. "
-                "A benchmark profile can replace inline benchmark commands, but it does not "
-                "replace the connection details needed to read and write the target config."
-            )
-            logger.error(msg)
-            return f"## Tuning Failed\n\n{msg}", {}
-
-        # Dry run
-        if req.dry_run:
-            return _format_dry_run_report(state), {}
-
-        # Execute workflow
-        from src.workflow.graph import create_workflow
-
-        workflow = create_workflow()
-        logger.info("starting tuning workflow: {} trials", state.max_trials)
-
-        final_event = None
-        async for event in workflow.astream(state, stream_mode="values"):
-            node_name = event.get("phase", "unknown")
-            trial_num = event.get("trial_number", 0)
-            msg = f"[Trial {trial_num}] Phase: {node_name}"
-            logger.info(msg)
-            session.progress_messages.append(msg)
-            final_event = event
-
-        # Reconstruct final state
-        if final_event:
-            state = _reconstruct_state(state, final_event)
-
-        report = _format_final_report(state, session)
-        structured = _extract_structured_results(state)
-
-        return report, structured
+        return await _execute_tuning_workflow(session, req, provider, model)
 
     except Exception as e:
         logger.exception("Tuning execution failed")

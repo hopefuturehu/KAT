@@ -11,6 +11,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from nanobot.agent.tuning.executor import (
+    _configure_tuner_llm,
     _build_experiment_state,
     _validate_execution_requirements,
 )
@@ -59,6 +60,7 @@ if "structlog" not in sys.modules:
     sys.modules["structlog"] = structlog_stub
 
 from src.parameters.schema import ParameterCategory, ParameterDefinition, ParameterRisk
+from src.config import settings as tuner_settings
 from src.workflow.nodes.plan import plan_changes
 from src.workflow.nodes.safety_check import safety_gate
 from src.workflow.state import ExperimentState, GoalSpec
@@ -132,6 +134,29 @@ def test_execution_state_includes_restart_and_risk_constraints() -> None:
 
     assert state.allow_restart is True
     assert state.max_risk_level == "high"
+
+
+def test_tuner_llm_configuration_is_restored_after_override() -> None:
+    provider = MagicMock(api_key="secret", api_base="https://example.com/v1")
+    original = (
+        tuner_settings.deepseek_api_key,
+        tuner_settings.deepseek_api_base,
+        tuner_settings.llm_model,
+        tuner_settings.llm_provider,
+    )
+
+    with _configure_tuner_llm(provider, "custom-model"):
+        assert tuner_settings.deepseek_api_key == "secret"
+        assert tuner_settings.deepseek_api_base == "https://example.com/v1"
+        assert tuner_settings.llm_model == "custom-model"
+        assert tuner_settings.llm_provider == "deepseek"
+
+    assert (
+        tuner_settings.deepseek_api_key,
+        tuner_settings.deepseek_api_base,
+        tuner_settings.llm_model,
+        tuner_settings.llm_provider,
+    ) == original
 
 
 def test_plan_filters_restart_and_high_risk_params_and_keeps_metadata(
