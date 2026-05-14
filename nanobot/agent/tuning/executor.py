@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
@@ -14,6 +14,39 @@ if str(_LLM_TUNER_ROOT) not in sys.path:
     sys.path.insert(0, str(_LLM_TUNER_ROOT))
 
 from nanobot.agent.tuning.schema import TuningRequirements, TuningSession
+
+if TYPE_CHECKING:
+    from nanobot.providers.base import LLMProvider
+
+
+def _configure_tuner_llm(
+    provider: "LLMProvider | None",
+    model: str | None,
+) -> None:
+    """Bridge nanobot provider credentials into the standalone _llm_tuner settings.
+
+    The _llm_tuner package maintains its own Settings object (loaded from
+    ``LLMTUNER_*`` env vars / ``.env``) that is completely independent of
+    nanobot's provider config.  Without this bridge the tuner agents cannot
+    call any LLM and fall back to Bayesian-only optimization.
+    """
+    if provider is None or not provider.api_key:
+        return
+
+    from src.config import settings as tuner_settings
+
+    tuner_settings.deepseek_api_key = provider.api_key
+    if provider.api_base:
+        tuner_settings.deepseek_api_base = provider.api_base
+    if model:
+        tuner_settings.llm_model = model
+    tuner_settings.llm_provider = "deepseek"
+    logger.info(
+        "configured _llm_tuner LLM: provider={} model={} base={}",
+        tuner_settings.llm_provider,
+        tuner_settings.llm_model,
+        tuner_settings.deepseek_api_base,
+    )
 
 
 async def _build_experiment_state(req: TuningRequirements) -> Any:
@@ -125,6 +158,8 @@ def _check_dependencies() -> list[str]:
 async def run_execution(
     session: TuningSession,
     _workspace: str,
+    provider: "LLMProvider | None" = None,
+    model: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Execute the tuning workflow and return (report_md, structured_data).
 
@@ -148,6 +183,8 @@ async def run_execution(
         if execution_issue:
             logger.error(execution_issue)
             return f"## Tuning Failed\n\n{execution_issue}", {}
+
+        _configure_tuner_llm(provider, model)
 
         state = await _build_experiment_state(req)
 

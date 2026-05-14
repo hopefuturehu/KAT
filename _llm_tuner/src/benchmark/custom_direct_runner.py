@@ -11,7 +11,6 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from string import Template
 from typing import Any
 
 from src.benchmark.runner import BenchmarkRunner, BenchmarkProfile
@@ -150,19 +149,27 @@ class CustomDirectRunner(BenchmarkRunner):
 
     # ── Template interpolation ────────────────────────────────────────────────
 
+    class _SafeFormatDict(dict[str, Any]):
+        """Return ``{key}`` unchanged when a key is missing, so an incomplete
+        template still produces a readable (if wrong) command instead of raising
+        ``KeyError``."""
+
+        def __missing__(self, key: str) -> str:
+            return "{" + key + "}"
+
     def _render(self, template: str, extra: dict[str, Any] | None = None) -> str:
         """Substitute ``{host}``, ``{port}``, ``{config_path}``, and extra vars."""
         if not template:
             return ""
         ctx = {
-            "host": self.host,
-            "port": self.port,
-            "credentials": self.credentials,
+            "host": self.host or "",
+            "port": self.port or "",
+            "credentials": self.credentials or "",
             "config_path": str(self.config_path),
         }
         if extra:
             ctx.update(extra)
-        return Template(template).safe_substitute(ctx)
+        return template.format_map(self._SafeFormatDict(ctx))
 
     # ── Lifecycle commands ────────────────────────────────────────────────────
 

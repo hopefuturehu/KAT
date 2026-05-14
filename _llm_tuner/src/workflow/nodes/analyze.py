@@ -22,13 +22,14 @@ async def analyze_results(state: ExperimentState) -> ExperimentState:
         "aggregate": state.current_trial.metrics,
     }
 
-    # Compute improvement over best
+    # Compute improvement over best (skip history update for failed benchmarks)
     improvement = state.compute_improvement(state.current_trial.metrics)
     state.current_trial.improvement_pct = improvement
-    state.improvement_history.append(improvement)
+    if state.current_trial.metrics:
+        state.improvement_history.append(improvement)
 
-    # Update best if improved
-    if not state.best_metrics or improvement > 0:
+    # Update best if improved (skip empty metrics from failed benchmarks)
+    if state.current_trial.metrics and (not state.best_metrics or improvement > 0):
         state.best_metrics = dict(state.current_trial.metrics)
         state.best_config = dict(state.current_config)
         state.best_trial_number = state.trial_number

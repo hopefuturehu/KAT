@@ -124,6 +124,8 @@ class ExperimentState(BaseModel):
     max_risk_level: str = "medium"
     max_consecutive_rollbacks: int = 3
     consecutive_rollbacks: int = 0
+    consecutive_orchestrator_failures: int = 0
+    consecutive_empty_proposals: int = 0
     memory_headroom_pct: int = 20
     blocklist: list[str] = Field(default_factory=list)
     rollback_history: list[dict] = Field(default_factory=list)
@@ -197,6 +199,8 @@ class ExperimentState(BaseModel):
 
     def compute_improvement(self, new_metrics: dict[str, float]) -> float:
         """Compute weighted improvement over best previous metrics."""
+        if not new_metrics:
+            return 0.0  # Failed benchmark — no data to compare
         if not self.best_metrics:
             return 100.0  # No baseline — first trial is 100% improvement
 

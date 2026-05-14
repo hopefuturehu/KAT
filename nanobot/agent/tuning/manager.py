@@ -174,7 +174,11 @@ class TuningSessionManager:
         from nanobot.utils.prompt_templates import render_template
 
         try:
-            report, structured = await run_execution(session, str(self.workspace))
+            report, structured = await run_execution(
+                session, str(self.workspace),
+                provider=self.provider,
+                model=self.model,
+            )
             session.phase = TuningPhase.DONE
             session.final_report = report
 

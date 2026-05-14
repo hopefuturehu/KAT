@@ -12,6 +12,14 @@ async def plan_changes(state: ExperimentState) -> ExperimentState:
     logger.info("planning changes", trial=state.trial_number + 1)
     state.phase = ExperimentPhase.PLANNING
 
+    # Circuit breaker: too many consecutive empty proposals → stuck, ask advisor
+    if state.consecutive_empty_proposals >= 5:
+        logger.warning(
+            "too many empty proposals — invoking advisor",
+            consecutive_empty=state.consecutive_empty_proposals,
+        )
+        return await _invoke_advisor(state)
+
     has_converged = state.has_converged()
     all_goals_met = state.all_goals_met()
 
@@ -105,11 +113,17 @@ async def _invoke_tuner(state: ExperimentState) -> ExperimentState:
     )
 
     state.tuning_proposal = proposal
+    changes = proposal.get("changes", [])
+    if changes:
+        state.consecutive_empty_proposals = 0
+    else:
+        state.consecutive_empty_proposals += 1
     logger.info(
         "tuner proposal",
         source=proposal.get("_source", "unknown"),
-        changes_count=len(proposal.get("changes", [])),
+        changes_count=len(changes),
         strategy=proposal.get("overall_strategy", ""),
+        consecutive_empty=state.consecutive_empty_proposals,
     )
     return state
 

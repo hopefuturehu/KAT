@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     llm_provider: str = Field(default="deepseek", description="LLM provider: anthropic, deepseek, openai")
     llm_model: str = Field(default="deepseek-chat", description="Default model name")
     llm_temperature: float = Field(default=0.1, ge=0.0, le=1.0)
-    llm_max_tokens: int = Field(default=4096)
+    llm_max_tokens: int = Field(default=8192)
 
     # Provider-specific keys
     anthropic_api_key: str = Field(default="", description="Anthropic API key")

@@ -70,10 +70,28 @@ async def make_decision(state: ExperimentState) -> ExperimentState:
             "last_trial_summary": last_trial_summary,
             "convergence_window": state.convergence_window,
         })
+        state.consecutive_orchestrator_failures = 0
     except Exception as exc:
-        logger.error("orchestrator agent call failed — using rule-based decision", error=str(exc))
+        state.consecutive_orchestrator_failures += 1
+        logger.error(
+            "orchestrator agent call failed — using rule-based decision",
+            error=str(exc),
+            consecutive_failures=state.consecutive_orchestrator_failures,
+        )
         state.errors.append(f"Orchestrator agent failed: {exc}")
-        decision = {"action": "CONTINUE_TUNING", "reasoning": f"Rule-based fallback after LLM error: {exc}"}
+        if state.consecutive_orchestrator_failures >= 5:
+            decision = {
+                "action": "CONVERGED",
+                "reasoning": (
+                    f"Orchestrator LLM unavailable after "
+                    f"{state.consecutive_orchestrator_failures} consecutive failures"
+                ),
+            }
+        else:
+            decision = {
+                "action": "CONTINUE_TUNING",
+                "reasoning": f"Rule-based fallback after LLM error: {exc}",
+            }
 
     state.orchestrator_decision = decision
 

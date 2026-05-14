@@ -94,7 +94,7 @@ def _requirements_complete(req: TuningRequirements) -> bool:
 
 async def run_intake_turn(
     runner: AgentRunner,
-    _provider: LLMProvider,
+    provider: LLMProvider,
     model: str,
     workspace: str,
     conversation: list[dict[str, Any]],
