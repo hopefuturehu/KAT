@@ -71,10 +71,7 @@ async def _invoke_tuner(state: ExperimentState) -> ExperimentState:
                 "new_value": change.get("new_value"),
             })
 
-    analysis = state.analysis_result or {
-        "recommended_focus": "general tuning",
-        "likely_bottleneck": "unknown",
-    }
+    analysis = state.analysis_result.model_dump()
 
     # Build trial history dicts for Bayesian seeding
     trial_history = [
@@ -147,8 +144,11 @@ async def _invoke_advisor(state: ExperimentState) -> ExperimentState:
 
     try:
         recommendations = await advisor.recommend(
-            state={"target_system": state.target_system, "best_metrics": state.best_metrics,
-                    "hardware_spec": state.hardware_spec},
+        state={
+            "target_system": state.target_system,
+            "best_metrics": state.best_metrics,
+            "hardware_spec": state.hardware_spec,
+        },
             goals_with_progress=goals_with_progress,
             current_config=state.current_config,
             bottleneck=bottleneck,
@@ -166,8 +166,12 @@ async def _invoke_advisor(state: ExperimentState) -> ExperimentState:
         }
 
     state.advisor_recommendations = recommendations
-    state.phase = ExperimentPhase.ADVISING
-    logger.info("advisor recommendations generated", count=len(recommendations.get("recommendations", [])))
+    # Advisor output is part of planning, not a separate graph node.
+    state.phase = ExperimentPhase.PLANNING
+    logger.info(
+        "advisor recommendations generated",
+        count=len(state.advisor_recommendations.recommendations),
+    )
     return state
 
 

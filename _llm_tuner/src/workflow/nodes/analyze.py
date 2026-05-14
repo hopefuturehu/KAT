@@ -22,18 +22,6 @@ async def analyze_results(state: ExperimentState) -> ExperimentState:
         "aggregate": state.current_trial.metrics,
     }
 
-    # Compute improvement over best (skip history update for failed benchmarks)
-    improvement = state.compute_improvement(state.current_trial.metrics)
-    state.current_trial.improvement_pct = improvement
-    if state.current_trial.metrics:
-        state.improvement_history.append(improvement)
-
-    # Update best if improved (skip empty metrics from failed benchmarks)
-    if state.current_trial.metrics and (not state.best_metrics or improvement > 0):
-        state.best_metrics = dict(state.current_trial.metrics)
-        state.best_config = dict(state.current_config)
-        state.best_trial_number = state.trial_number
-
     # Build trend data for analyzer
     trend_data = [
         {
@@ -70,8 +58,7 @@ async def analyze_results(state: ExperimentState) -> ExperimentState:
             "recommended_focus": "general tuning",
         }
 
-    state.analysis_result = analysis
-    state.current_trial.analysis = analysis
+    state.record_analysis(analysis)
     state.consecutive_rollbacks = 0
     state.commit_current_trial(status="completed")
 
@@ -80,9 +67,9 @@ async def analyze_results(state: ExperimentState) -> ExperimentState:
 
     logger.info(
         "analysis complete",
-        bottleneck=analysis.get("likely_bottleneck"),
-        trend=analysis.get("trend"),
-        improvement=f"{improvement:.1f}%",
+        bottleneck=state.analysis_result.likely_bottleneck,
+        trend=state.analysis_result.trend,
+        improvement=f"{state.current_trial.improvement_pct:.1f}%",
     )
     return state
 

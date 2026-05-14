@@ -1,6 +1,4 @@
 """Decide node: invoke Orchestrator to determine next workflow step."""
-
-from datetime import datetime
 from src.workflow.state import ExperimentState, ExperimentPhase
 from src.agents.orchestrator import OrchestratorAgent
 from src.utils.logging import get_logger
@@ -16,7 +14,7 @@ async def make_decision(state: ExperimentState) -> ExperimentState:
 
     # Compute elapsed time
     if state.start_time:
-        state.elapsed_hours = (datetime.utcnow() - state.start_time).total_seconds() / 3600
+        state.update_elapsed_hours()
 
     last_trial_summary = "No previous trial"
     if state.trial_history:

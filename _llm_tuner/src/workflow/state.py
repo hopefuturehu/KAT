@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import copy
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ExperimentPhase(str, Enum):
@@ -33,7 +33,95 @@ class GoalSpec(BaseModel):
     weight: float = 1.0
 
 
+class StatePayload(BaseModel):
+    """Typed node payload that still behaves like a mapping for legacy callers."""
+
+    model_config = ConfigDict(
+        validate_assignment=True,
+        populate_by_name=True,
+        extra="allow",
+    )
+
+    _ALIASES = {
+        "_source": "source",
+    }
+
+    def _field_name_for_key(self, key: str) -> str:
+        return self._ALIASES.get(key, key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        field_name = self._field_name_for_key(key)
+        return getattr(self, field_name, default)
+
+    def __getitem__(self, key: str) -> Any:
+        field_name = self._field_name_for_key(key)
+        return getattr(self, field_name)
+
+    def __setitem__(self, key: str, value: Any) -> None:
+        field_name = self._field_name_for_key(key)
+        setattr(self, field_name, value)
+
+
+class ProposedChange(StatePayload):
+    parameter: str = ""
+    proposed_value: Any = ""
+    rationale: str = ""
+    expected_effect: str = ""
+    risk: str = "unknown"
+
+
+class TuningProposal(StatePayload):
+    changes: list[ProposedChange] = Field(default_factory=list)
+    overall_strategy: str = ""
+    source: str = Field(default="", alias="_source")
+    reasoning: str = ""
+
+
+class SuggestedModification(StatePayload):
+    parameter: str = ""
+    suggested_value: Any = ""
+    reason: str = ""
+
+
+class SafetyVerdict(StatePayload):
+    verdict: str = ""
+    overall_risk_level: str = ""
+    warnings: list[str] = Field(default_factory=list)
+    suggested_modifications: list[SuggestedModification] = Field(default_factory=list)
+    requires_human_approval: bool = False
+    notes: str = ""
+
+
+class AnalysisResult(StatePayload):
+    trend: str = ""
+    improvement_pct: float = 0.0
+    likely_bottleneck: str = "unknown"
+    change_impact: str = ""
+    insights: str = ""
+    recommended_focus: str = "general tuning"
+
+
+class AdvisorRecommendation(StatePayload):
+    category: str = ""
+    recommendation: str = ""
+    expected_benefit: str = ""
+    effort: str = "unknown"
+    risk: str = "unknown"
+
+
+class AdvisorRecommendations(StatePayload):
+    summary: str = ""
+    recommendations: list[AdvisorRecommendation] = Field(default_factory=list)
+
+
+class OrchestratorDecision(StatePayload):
+    action: str = "CONTINUE_TUNING"
+    reasoning: str = ""
+
+
 class TrialResult(BaseModel):
+    model_config = ConfigDict(validate_assignment=True)
+
     trial_number: int
     config: dict[str, str] = Field(default_factory=dict)
     metrics: dict[str, float] = Field(default_factory=dict)
@@ -41,12 +129,14 @@ class TrialResult(BaseModel):
     parameter_changes: list[dict] = Field(default_factory=list)
     improvement_pct: float = 0.0
     status: str = "running"
-    analysis: dict = Field(default_factory=dict)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    analysis: AnalysisResult = Field(default_factory=AnalysisResult)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class ExperimentState(BaseModel):
     """Central state object shared by all LangGraph nodes."""
+
+    model_config = ConfigDict(validate_assignment=True)
 
     # Experiment identity
     experiment_id: str = ""
@@ -132,11 +222,11 @@ class ExperimentState(BaseModel):
     safety_warnings: list[str] = Field(default_factory=list)
 
     # Agent outputs
-    orchestrator_decision: dict = Field(default_factory=dict)
-    analysis_result: dict = Field(default_factory=dict)
-    tuning_proposal: dict = Field(default_factory=dict)
-    safety_verdict: dict = Field(default_factory=dict)
-    advisor_recommendations: dict = Field(default_factory=dict)
+    orchestrator_decision: OrchestratorDecision = Field(default_factory=OrchestratorDecision)
+    analysis_result: AnalysisResult = Field(default_factory=AnalysisResult)
+    tuning_proposal: TuningProposal = Field(default_factory=TuningProposal)
+    safety_verdict: SafetyVerdict = Field(default_factory=SafetyVerdict)
+    advisor_recommendations: AdvisorRecommendations = Field(default_factory=AdvisorRecommendations)
 
     # Tunable parameters snapshot
     tunable_parameters: list[dict] = Field(default_factory=list)
@@ -170,6 +260,47 @@ class ExperimentState(BaseModel):
         if not any(t.trial_number == self.current_trial.trial_number for t in self.trial_history):
             self.trial_history.append(self.current_trial)
 
+        return self.current_trial
+
+    @property
+    def connection_host(self) -> str:
+        return self.target_host or self.redis_host or "127.0.0.1"
+
+    @property
+    def connection_port(self) -> str:
+        return self.target_port or self.redis_port or "6379"
+
+    @property
+    def connection_credentials(self) -> str:
+        return self.target_credentials or self.redis_password
+
+    def update_elapsed_hours(self) -> float:
+        """Refresh and return elapsed runtime based on start_time."""
+        if self.start_time is None:
+            self.elapsed_hours = 0.0
+        else:
+            self.elapsed_hours = (datetime.now(UTC) - self.start_time).total_seconds() / 3600
+        return self.elapsed_hours
+
+    def record_analysis(self, analysis: AnalysisResult | dict[str, Any]) -> TrialResult | None:
+        """Persist analysis and update best-known metrics from the active trial."""
+        if not isinstance(analysis, AnalysisResult):
+            analysis = AnalysisResult.model_validate(analysis)
+        if self.current_trial is None:
+            self.analysis_result = analysis
+            return None
+
+        self.analysis_result = analysis
+        self.current_trial.analysis = analysis
+
+        improvement = self.compute_improvement(self.current_trial.metrics)
+        self.current_trial.improvement_pct = improvement
+        if self.current_trial.metrics:
+            self.improvement_history.append(improvement)
+            if not self.best_metrics or improvement > 0:
+                self.best_metrics = dict(self.current_trial.metrics)
+                self.best_config = dict(self.current_config)
+                self.best_trial_number = self.current_trial.trial_number
         return self.current_trial
 
     def goal_met(self, metric_name: str, value: float) -> bool:

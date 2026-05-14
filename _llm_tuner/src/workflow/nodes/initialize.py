@@ -1,6 +1,6 @@
 """Initialize node: provision environment, capture baseline, set up experiment."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from src.workflow.state import ExperimentState, ExperimentPhase
 from src.utils.logging import get_logger
 
@@ -10,7 +10,7 @@ logger = get_logger(__name__)
 async def initialize_experiment(state: ExperimentState) -> ExperimentState:
     logger.info("initializing experiment", name=state.experiment_name)
     state.phase = ExperimentPhase.INITIALIZING
-    state.start_time = datetime.utcnow()
+    state.start_time = datetime.now(UTC)
 
     # Capture hardware spec
     import platform

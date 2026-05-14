@@ -125,16 +125,12 @@ async def _teardown_environment(state: ExperimentState) -> None:
                 health_check_command=state.health_check_command,
             )
 
-            host = state.target_host or state.redis_host
-            port = state.target_port or state.redis_port
-            creds = state.target_credentials or state.redis_password
-
             runner = CustomDirectRunner(
                 profile=profile,
                 config_path=state.direct_config_path,
-                host=host,
-                port=port,
-                credentials=creds,
+                host=state.connection_host,
+                port=state.connection_port,
+                credentials=state.connection_credentials,
             )
 
             await runner.write_config(config_text)
@@ -152,16 +148,12 @@ async def _teardown_environment(state: ExperimentState) -> None:
             profile = BenchmarkProfile(
                 name="teardown-final", teardown_command=state.teardown_command
             )
-            host = state.target_host or state.redis_host
-            port = state.target_port or state.redis_port
-            creds = state.target_credentials or state.redis_password
-
             runner = CustomDirectRunner(
                 profile=profile,
                 config_path=state.direct_config_path,
-                host=host,
-                port=port,
-                credentials=creds,
+                host=state.connection_host,
+                port=state.connection_port,
+                credentials=state.connection_credentials,
             )
             await runner.stop()
             logger.info("teardown command executed")

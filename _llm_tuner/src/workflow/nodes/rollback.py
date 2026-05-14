@@ -24,16 +24,12 @@ async def rollback_config(state: ExperimentState) -> ExperimentState:
             health_check_command=state.health_check_command,
         )
 
-        host = state.target_host or state.redis_host
-        port = state.target_port or state.redis_port
-        creds = state.target_credentials or state.redis_password
-
         runner = CustomDirectRunner(
             profile=profile,
             config_path=state.direct_config_path,
-            host=host,
-            port=port,
-            credentials=creds,
+            host=state.connection_host,
+            port=state.connection_port,
+            credentials=state.connection_credentials,
         )
 
         rolled_back = runner.rollback_config()

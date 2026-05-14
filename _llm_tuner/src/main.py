@@ -504,6 +504,18 @@ def _reconstruct_state(original: "ExperimentState", event: dict) -> "ExperimentS
         original.phase = event["phase"]
     if "errors" in event:
         original.errors = event["errors"]
+    if "tuning_proposal" in event:
+        original.tuning_proposal = event["tuning_proposal"]
+    if "safety_verdict" in event:
+        original.safety_verdict = event["safety_verdict"]
+    if "analysis_result" in event:
+        original.analysis_result = event["analysis_result"]
+    if "orchestrator_decision" in event:
+        original.orchestrator_decision = event["orchestrator_decision"]
+    if "advisor_recommendations" in event:
+        original.advisor_recommendations = event["advisor_recommendations"]
+    if "tunable_parameters" in event:
+        original.tunable_parameters = event["tunable_parameters"]
 
     # Reconstruct trial_history from event (handles both dicts and TrialResult objects)
     if "trial_history" in event and event["trial_history"]:

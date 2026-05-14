@@ -24,9 +24,9 @@ async def execute_benchmark(state: ExperimentState) -> ExperimentState:
         runner = CustomDirectRunner(
             profile=profile,
             config_path=state.direct_config_path,
-            host=state.target_host or state.redis_host,
-            port=state.target_port or state.redis_port,
-            credentials=state.target_credentials or state.redis_password,
+            host=state.connection_host,
+            port=state.connection_port,
+            credentials=state.connection_credentials,
         )
 
         # ── Stability wrapper ─────────────────────────────────────────────────
