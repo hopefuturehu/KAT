@@ -8,6 +8,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from nanobot.agent.loop import AgentLoop
+from nanobot.agent.tuning.intent import detect_target_system, looks_like_tuning_request
 from nanobot.agent.tuning.schema import TuningPhase
 from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
@@ -117,6 +118,12 @@ def test_redis_and_mysql_config_questions_are_not_misrouted(tmp_path: Path) -> N
 
     assert redis_state["should_route"] is False
     assert mysql_state["should_route"] is False
+
+
+def test_shared_intent_rules_detect_target_system_and_tuning_intent() -> None:
+    assert detect_target_system("请帮我优化 mysql 延迟") == "mysql"
+    assert looks_like_tuning_request("请帮我优化 mysql 延迟") is True
+    assert looks_like_tuning_request("mysql 参数说明一下") is False
 
 
 # ---------------------------------------------------------------------------

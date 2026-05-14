@@ -2,38 +2,23 @@
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict
 
 from loguru import logger
 
+from nanobot.agent.tuning.intent import (
+    detect_target_system,
+    looks_like_escape_request,
+    looks_like_retry_request,
+    looks_like_tuning_request,
+)
 from nanobot.agent.tuning.manager import TuningSessionManager
 from nanobot.agent.tuning.schema import TuningPhase
 
 if TYPE_CHECKING:
     from nanobot.bus.queue import MessageBus
     from nanobot.providers.base import LLMProvider
-
-
-_TARGET_SYSTEM_PATTERNS = {
-    "redis": re.compile(r"\bredis\b", re.IGNORECASE | re.ASCII),
-    "mysql": re.compile(r"\bmysql\b", re.IGNORECASE | re.ASCII),
-}
-_TUNING_KEYWORDS = (
-    "tune", "tuning", "optimize", "optimization",
-    "throughput", "latency", "qps", "rps", "performance",
-    "调优", "调参", "优化", "性能", "吞吐", "延迟",
-)
-_RETRY_KEYWORDS = (
-    "continue", "retry", "rerun", "run again", "try again",
-    "继续", "重试", "再试", "重新跑", "重新执行",
-)
-_ESCAPE_KEYWORDS = (
-    "cancel tuning", "stop tuning", "abort tuning",
-    "取消调优", "停止调优", "退出调优",
-    "not tuning", "no tuning",
-)
 
 
 class TuningRouteState(TypedDict, total=False):
@@ -86,29 +71,16 @@ class TuningIntentRouter:
     # ------------------------------------------------------------------
 
     def _detect_target_system(self, message: str) -> str | None:
-        normalized = message.strip().lower()
-        if not normalized:
-            return None
-        for system, pattern in _TARGET_SYSTEM_PATTERNS.items():
-            if pattern.search(normalized):
-                return system
-        return None
+        return detect_target_system(message)
 
     def _looks_like_tuning_request(self, message: str) -> bool:
-        normalized = message.strip().lower()
-        if not normalized:
-            return False
-        if self._detect_target_system(normalized) is None:
-            return False
-        return any(keyword in normalized for keyword in _TUNING_KEYWORDS)
+        return looks_like_tuning_request(message)
 
     def _looks_like_retry_request(self, message: str) -> bool:
-        normalized = message.strip().lower()
-        return any(keyword in normalized for keyword in _RETRY_KEYWORDS)
+        return looks_like_retry_request(message)
 
     def _looks_like_escape_request(self, message: str) -> bool:
-        normalized = message.strip().lower()
-        return any(keyword in normalized for keyword in _ESCAPE_KEYWORDS)
+        return looks_like_escape_request(message)
 
     # ------------------------------------------------------------------
     # Routing

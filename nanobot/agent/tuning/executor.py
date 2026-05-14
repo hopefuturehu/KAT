@@ -107,6 +107,7 @@ async def _execute_tuning_workflow(
     req: TuningRequirements,
     provider: "LLMProvider | None",
     model: str | None,
+    report_progress: "Callable[[str], Awaitable[None]] | None" = None,
 ) -> tuple[str, dict[str, Any]]:
     async with _TUNER_EXECUTION_LOCK:
         with _configure_tuner_llm(provider, model):
@@ -131,8 +132,11 @@ async def _execute_tuning_workflow(
 
             workflow = create_workflow()
             logger.info("starting tuning workflow: {} trials", state.max_trials)
+            if report_progress:
+                await report_progress(_format_start_progress(state))
 
             final_event = None
+            last_reported_trial = -1
             async for event in workflow.astream(state, stream_mode="values"):
                 node_name = event.get("phase", "unknown")
                 trial_num = event.get("trial_number", 0)
@@ -140,6 +144,13 @@ async def _execute_tuning_workflow(
                 logger.info(msg)
                 session.progress_messages.append(msg)
                 final_event = event
+
+                # Publish progress at trial boundaries when meaningful data is available
+                if report_progress and trial_num > last_reported_trial:
+                    progress_message = _format_trial_progress(event, state.max_trials)
+                    if progress_message:
+                        last_reported_trial = trial_num
+                        await report_progress(progress_message)
 
             if final_event:
                 state = _reconstruct_state(state, final_event)
@@ -152,52 +163,9 @@ async def _build_experiment_state(req: TuningRequirements) -> Any:
     """Build an ExperimentState from TuningRequirements."""
     from src.workflow.state import ExperimentState, GoalSpec
 
-    goals = [
-        GoalSpec(
-            metric=g.metric,
-            operator=g.operator,
-            value=g.value,
-            weight=g.weight,
-        )
-        for g in req.goals
-    ]
-
-    state = ExperimentState(
-        experiment_name=f"{req.target_system}-tuning",
-        target_system=req.target_system,
-        target_version=req.target_version,
-        goals=goals,
-        max_trials=req.max_trials,
-        max_duration_hours=req.max_duration_hours,
-        blocklist=req.blocked_parameters,
-        allow_restart=req.allow_restart,
-        memory_headroom_pct=req.memory_headroom_pct,
-        max_restart_changes=req.max_restart_changes,
-        max_risk_level=req.max_risk_level,
-        # Connection
-        direct_mode=True,
-        target_host=req.host,
-        target_port=req.port,
-        target_credentials=req.password,
-        direct_config_path=req.config_file,
-        # Lifecycle commands
-        start_command=req.start_command,
-        run_command=req.run_command,
-        teardown_command=req.teardown_command,
-        health_check_command=req.health_check_command,
-        restart_command=req.restart_command,
-        # Output parsing
-        output_format=req.output_format,
-        metric_regex=req.metric_regex,
-        # Benchmark profile
-        benchmark_profile_path=req.benchmark_profile_path,
-        # Stability
-        stable_mode=req.stable_mode,
-        stable_warmup_requests=req.stable_warmup_requests,
-        stable_iterations=req.stable_iterations,
-    )
-
-    return state
+    kwargs = req.to_experiment_state_kwargs()
+    kwargs["goals"] = [GoalSpec(**goal) for goal in kwargs["goals"]]
+    return ExperimentState(**kwargs)
 
 
 async def _setup_direct_mode(state: Any, req: TuningRequirements) -> None:
@@ -236,6 +204,7 @@ async def run_execution(
     _workspace: str,
     provider: "LLMProvider | None" = None,
     model: str | None = None,
+    report_progress: "Callable[[str], Awaitable[None]] | None" = None,
 ) -> tuple[str, dict[str, Any]]:
     """Execute the tuning workflow and return (report_md, structured_data).
 
@@ -260,7 +229,9 @@ async def run_execution(
             logger.error(execution_issue)
             return f"## Tuning Failed\n\n{execution_issue}", {}
 
-        return await _execute_tuning_workflow(session, req, provider, model)
+        return await _execute_tuning_workflow(
+            session, req, provider, model, report_progress=report_progress,
+        )
 
     except Exception as e:
         logger.exception("Tuning execution failed")
@@ -301,6 +272,12 @@ def _reconstruct_state(original: Any, event: dict[str, Any]) -> Any:
         "phase",
         "errors",
         "advisor_recommendations",
+        "best_trial_number",
+        "tuning_proposal",
+        "safety_verdict",
+        "analysis_result",
+        "orchestrator_decision",
+        "tunable_parameters",
     ):
         if field in event:
             setattr(original, field, event[field])
@@ -309,6 +286,9 @@ def _reconstruct_state(original: Any, event: dict[str, Any]) -> Any:
 
 def _extract_structured_results(state: Any) -> dict[str, Any]:
     """Extract structured tuning data for archiving and session storage."""
+    advisor_recommendations = getattr(state, "advisor_recommendations", {})
+    if hasattr(advisor_recommendations, "model_dump"):
+        advisor_recommendations = advisor_recommendations.model_dump()
     return {
         "best_config": dict(getattr(state, "best_config", {})),
         "best_metrics": dict(getattr(state, "best_metrics", {})),
@@ -318,8 +298,29 @@ def _extract_structured_results(state: Any) -> dict[str, Any]:
         "target_version": getattr(state, "target_version", ""),
         "experiment_name": getattr(state, "experiment_name", ""),
         "elapsed_hours": getattr(state, "elapsed_hours", 0.0),
-        "advisor_recommendations": dict(getattr(state, "advisor_recommendations", {})),
+        "advisor_recommendations": advisor_recommendations,
     }
+
+
+def _format_start_progress(state: Any) -> str:
+    return (
+        f"Tuning started ({state.max_trials} trial max) — "
+        f"baseline config loaded with {len(state.current_config)} params"
+    )
+
+
+def _format_trial_progress(event: dict[str, Any], max_trials: int) -> str | None:
+    trial_num = event.get("trial_number", 0)
+    best = event.get("best_metrics", {})
+    improvement = event.get("improvement_history", [])
+    if not best and not improvement:
+        return None
+    best_str = ", ".join(
+        f"{k}={v:.0f}" if isinstance(v, float) else f"{k}={v}"
+        for k, v in list(best.items())[:3]
+    )
+    imp_str = f" (Δ={improvement[-1]:+.1f}%)" if improvement else ""
+    return f"Trial {trial_num}/{max_trials}: {best_str}{imp_str}"
 
 
 def _format_dry_run_report(state: Any) -> str:

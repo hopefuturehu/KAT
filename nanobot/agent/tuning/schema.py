@@ -111,33 +111,43 @@ class TuningRequirements:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
-    def to_experiment_dict(self) -> dict[str, Any]:
-        """Convert to a dict suitable for building ExperimentState."""
-        goals_dicts = [
-            {
-                "metric": g.metric,
-                "operator": g.operator,
-                "value": g.value,
-                "weight": g.weight,
-            }
-            for g in self.goals
-        ]
+    def goals_summary(self) -> str:
+        return ", ".join(
+            f"{goal.metric} {goal.operator} {goal.value}"
+            for goal in self.goals
+        )
+
+    def to_experiment_state_kwargs(self) -> dict[str, Any]:
+        """Convert intake requirements into ExperimentState constructor kwargs."""
+        goals_dicts = [asdict(goal) for goal in self.goals]
         return {
-            "name": f"{self.target_system}-tuning",
+            "experiment_name": f"{self.target_system}-tuning",
             "target_system": self.target_system,
             "target_version": self.target_version,
             "goals": goals_dicts,
-            "optimization": {
-                "max_trials": self.max_trials,
-                "max_duration_hours": self.max_duration_hours,
-                "parameter_focus": {
-                    "blocklist": self.blocked_parameters,
-                },
-            },
-            "safety": {
-                "max_restart_requiring_changes": self.max_restart_changes,
-                "memory_headroom_pct": self.memory_headroom_pct,
-            },
+            "max_trials": self.max_trials,
+            "max_duration_hours": self.max_duration_hours,
+            "blocklist": list(self.blocked_parameters),
+            "allow_restart": self.allow_restart,
+            "memory_headroom_pct": self.memory_headroom_pct,
+            "max_restart_changes": self.max_restart_changes,
+            "max_risk_level": self.max_risk_level,
+            "direct_mode": True,
+            "target_host": self.host,
+            "target_port": self.port,
+            "target_credentials": self.password,
+            "direct_config_path": self.config_file,
+            "start_command": self.start_command,
+            "run_command": self.run_command,
+            "teardown_command": self.teardown_command,
+            "health_check_command": self.health_check_command,
+            "restart_command": self.restart_command,
+            "output_format": self.output_format,
+            "metric_regex": dict(self.metric_regex),
+            "benchmark_profile_path": self.benchmark_profile_path,
+            "stable_mode": self.stable_mode,
+            "stable_warmup_requests": self.stable_warmup_requests,
+            "stable_iterations": self.stable_iterations,
         }
 
 
@@ -160,5 +170,22 @@ class TuningSession:
     trials_completed: int = 0
     reuse_candidates: list[dict[str, Any]] = field(default_factory=list)
     awaiting_profile_selection: bool = False
+    intake_turn_count: int = 0
 
     _intake_conversation: list[dict[str, Any]] = field(default_factory=list)
+
+    # Safety limits
+    max_intake_turns: int = 10
+
+    def execution_summary(self) -> str:
+        return (
+            f"- Target: {self.requirements.target_system} {self.requirements.target_version}\n"
+            f"- Goals: {self.requirements.goals_summary()}\n"
+            f"- Max Trials: {self.requirements.max_trials}"
+        )
+
+    def apply_execution_result(self, structured: dict[str, Any]) -> None:
+        self.best_config = structured.get("best_config", {})
+        self.best_metrics = structured.get("best_metrics", {})
+        self.improvement_history = structured.get("improvement_history", [])
+        self.trials_completed = structured.get("trials_completed", 0)

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import re
 import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -13,9 +12,10 @@ from loguru import logger
 
 from nanobot.agent.runner import AgentRunner
 from nanobot.agent.tuning.intake import run_intake_turn
+from nanobot.agent.tuning.intent import PROFILE_SKIP_KEYWORDS, detect_target_system
 from nanobot.agent.tuning.profile_store import TuningProfileStore
-from nanobot.agent.tuning.schema import TuningPhase, TuningSession
-from nanobot.bus.events import InboundMessage
+from nanobot.agent.tuning.schema import TuningPhase, TuningRequirements, TuningSession
+from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
 
@@ -95,158 +95,229 @@ class TuningSessionManager:
 
         async with lock:
             session = self._sessions.get(session_key)
-
-            # If session exists and already has requirements, retry execution
-            if session is not None and session.phase in (
-                TuningPhase.EXECUTION,
-                TuningPhase.ERROR,
-            ):
-                if session.phase == TuningPhase.EXECUTION and self._is_execution_running(session_key):
-                    return (
-                        "Tuning execution is already running in the background.\n\n"
-                        f"- Target: {session.requirements.target_system} {session.requirements.target_version}\n"
-                        f"- Goals: {', '.join(f'{g.metric} {g.operator} {g.value}' for g in session.requirements.goals)}\n"
-                        f"- Max Trials: {session.requirements.max_trials}\n"
-                        "You will be notified when it completes."
-                    )
-                if session.phase == TuningPhase.ERROR:
-                    session.phase = TuningPhase.EXECUTION
-                self._start_execution_task(
-                    session, session_key, origin_channel, origin_chat_id
-                )
-                return (
-                    "Retrying tuning execution with existing requirements:\n\n"
-                    f"- Target: {session.requirements.target_system} "
-                    f"{session.requirements.target_version}\n"
-                    f"- Goals: {', '.join(f'{g.metric} {g.operator} {g.value}' for g in session.requirements.goals)}\n"
-                    f"- Max Trials: {session.requirements.max_trials}\n"
-                    "Tuning is running in the background. You will be notified when it completes."
-                )
-
-            if session is None:
-                # First call: create session and start intake
-                session = TuningSession(
-                    task_id=str(uuid.uuid4())[:8],
-                    task_description=task,
-                )
-                self._sessions[session_key] = session
-                conversation: list[dict[str, Any]] = [
-                    {"role": "user", "content": task}
-                ]
-                session._intake_conversation = list(conversation)
-                target_system = _infer_target_system(task)
-                if target_system:
-                    candidates = [
-                        profile.summary()
-                        for profile in self.profile_store.list_profiles(target_system)
-                    ]
-                    if candidates:
-                        session.reuse_candidates = candidates
-                        session.awaiting_profile_selection = True
-                        return _format_profile_selection_prompt(target_system, candidates)
-            elif user_response:
-                should_append_user_response = True
-                if session.awaiting_profile_selection:
-                    action = _parse_profile_selection(user_response, session.reuse_candidates)
-                    if action == "skip":
-                        session.awaiting_profile_selection = False
-                        session.reuse_candidates = []
-                        should_append_user_response = False
-                        conversation = session._intake_conversation or [
-                            {"role": "user", "content": session.task_description}
-                        ]
-                    elif isinstance(action, dict):
-                        selected_path = action.get("path", "")
-                        requirements = self.profile_store.load_requirements(selected_path)
-                        redacted_fields = [
-                            str(item) for item in action.get("redacted_fields", [])
-                        ]
-                        if redacted_fields:
-                            session.awaiting_profile_selection = False
-                            session.reuse_candidates = []
-                            session.phase = TuningPhase.INTAKE
-                            prompt = _format_profile_completion_prompt(
-                                action,
-                                requirements,
-                                redacted_fields,
-                            )
-                            session._intake_conversation = [
-                                {"role": "user", "content": session.task_description},
-                                {"role": "assistant", "content": prompt},
-                            ]
-                            return prompt
-                        session.requirements = requirements
-                        session.phase = TuningPhase.EXECUTION
-                        session.awaiting_profile_selection = False
-                        session.reuse_candidates = []
-                        self._start_execution_task(
-                            session, session_key, origin_channel, origin_chat_id
-                        )
-                        return (
-                            "Using saved tuning profile and starting execution:\n\n"
-                            f"- Profile: {action.get('name', Path(selected_path).stem)}\n"
-                            f"- Profile YAML: {selected_path}\n"
-                            f"- Target: {requirements.target_system} {requirements.target_version}\n"
-                            f"- Host: {requirements.host}:{requirements.port}\n"
-                            f"- Config: {requirements.config_file}\n"
-                            f"- Goals: {', '.join(f'{g.metric} {g.operator} {g.value}' for g in requirements.goals)}\n\n"
-                            "Tuning is running in the background. You will be notified when it completes."
-                        )
-                    else:
-                        return _format_profile_selection_prompt(
-                            _infer_target_system(session.task_description) or "target",
-                            session.reuse_candidates,
-                            invalid_response=True,
-                        )
-
-                # Continue intake with user's response
-                if should_append_user_response:
-                    conversation = list(session._intake_conversation)
-                    conversation.append({"role": "user", "content": user_response})
-            else:
-                # No response provided, re-state current status
-                conversation = session._intake_conversation
-
-            response, updated_conversation, requirements = await run_intake_turn(
-                runner=self.runner,
-                provider=self.provider,
-                model=self.model,
-                workspace=str(self.workspace),
-                conversation=conversation,
-                max_tool_result_chars=self.max_tool_result_chars,
+            execution_response = self._handle_existing_execution(
+                session, session_key, origin_channel, origin_chat_id,
             )
-            session._intake_conversation = updated_conversation
+            if execution_response is not None:
+                return execution_response
 
-            if requirements is not None:
-                # Requirements complete — transition to execution
-                session.requirements = requirements
-                session.phase = TuningPhase.EXECUTION
-                saved_profile = self.profile_store.save_requirements(
-                    requirements,
-                    task_description=session.task_description,
-                )
+            session, profile_prompt = self._ensure_session(session_key, task)
+            if profile_prompt is not None:
+                return profile_prompt
 
-                # Spawn execution in background
-                self._start_execution_task(
-                    session, session_key, origin_channel, origin_chat_id
-                )
+            conversation, early_response = self._prepare_conversation_for_intake(
+                session,
+                user_response,
+                session_key=session_key,
+                origin_channel=origin_channel,
+                origin_chat_id=origin_chat_id,
+            )
+            if early_response is not None:
+                return early_response
 
-                return (
-                    "Requirements collected. Starting tuning execution:\n\n"
-                    f"- Target: {requirements.target_system} {requirements.target_version}\n"
-                    f"- Goals: {', '.join(f'{g.metric} {g.operator} {g.value}' for g in requirements.goals)}\n"
-                    f"- Max Trials: {requirements.max_trials}\n"
-                    f"- Allow Restart: {requirements.allow_restart}\n"
-                    f"- Risk Level: {requirements.max_risk_level}\n"
-                    f"- Benchmark Profile: {requirements.benchmark_profile_path or 'inline commands'}\n"
-                    f"- Saved Profile: {saved_profile}\n\n"
-                    "Tuning is running in the background. You will be notified when it completes."
-                )
+            return await self._advance_intake(
+                session,
+                conversation,
+                session_key=session_key,
+                origin_channel=origin_channel,
+                origin_chat_id=origin_chat_id,
+            )
 
-            if response is None:
-                return "I encountered an issue processing your tuning request. Could you rephrase?"
+    def _handle_existing_execution(
+        self,
+        session: TuningSession | None,
+        session_key: str,
+        origin_channel: str,
+        origin_chat_id: str,
+    ) -> str | None:
+        if session is None or session.phase not in (TuningPhase.EXECUTION, TuningPhase.ERROR):
+            return None
+        if session.phase == TuningPhase.EXECUTION and self._is_execution_running(session_key):
+            return _format_execution_already_running(session)
+        if session.phase == TuningPhase.ERROR:
+            session.phase = TuningPhase.EXECUTION
+        self._start_execution_task(session, session_key, origin_channel, origin_chat_id)
+        return _format_execution_retry(session)
 
-            return response
+    def _ensure_session(
+        self,
+        session_key: str,
+        task: str,
+    ) -> tuple[TuningSession, str | None]:
+        session = self._sessions.get(session_key)
+        if session is not None:
+            return session, None
+
+        session = TuningSession(
+            task_id=str(uuid.uuid4())[:8],
+            task_description=task,
+        )
+        session._intake_conversation = [{"role": "user", "content": task}]
+        self._sessions[session_key] = session
+
+        target_system = detect_target_system(task)
+        if target_system is None:
+            return session, None
+
+        candidates = [
+            profile.summary()
+            for profile in self.profile_store.list_profiles(target_system)
+        ]
+        if not candidates:
+            return session, None
+
+        session.reuse_candidates = candidates
+        session.awaiting_profile_selection = True
+        return session, _format_profile_selection_prompt(target_system, candidates)
+
+    def _prepare_conversation_for_intake(
+        self,
+        session: TuningSession,
+        user_response: str,
+        *,
+        session_key: str,
+        origin_channel: str,
+        origin_chat_id: str,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        if session.awaiting_profile_selection:
+            return self._handle_profile_selection(
+                session,
+                user_response,
+                session_key=session_key,
+                origin_channel=origin_channel,
+                origin_chat_id=origin_chat_id,
+            )
+
+        conversation = list(session._intake_conversation)
+        if user_response:
+            conversation.append({"role": "user", "content": user_response})
+        return conversation, None
+
+    def _handle_profile_selection(
+        self,
+        session: TuningSession,
+        user_response: str,
+        *,
+        session_key: str,
+        origin_channel: str,
+        origin_chat_id: str,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        action = _parse_profile_selection(user_response, session.reuse_candidates)
+        if action == "skip":
+            session.awaiting_profile_selection = False
+            session.reuse_candidates = []
+            return (
+                session._intake_conversation or [{"role": "user", "content": session.task_description}],
+                None,
+            )
+        if not isinstance(action, dict):
+            target_system = detect_target_system(session.task_description) or "target"
+            return [], _format_profile_selection_prompt(
+                target_system,
+                session.reuse_candidates,
+                invalid_response=True,
+            )
+
+        response = self._apply_selected_profile(
+            session,
+            action,
+            session_key=session_key,
+            origin_channel=origin_channel,
+            origin_chat_id=origin_chat_id,
+        )
+        return [], response
+
+    def _apply_selected_profile(
+        self,
+        session: TuningSession,
+        candidate: dict[str, Any],
+        *,
+        session_key: str,
+        origin_channel: str,
+        origin_chat_id: str,
+    ) -> str:
+        selected_path = str(candidate.get("path", ""))
+        requirements = self.profile_store.load_requirements(selected_path)
+        redacted_fields = [str(item) for item in candidate.get("redacted_fields", [])]
+
+        session.awaiting_profile_selection = False
+        session.reuse_candidates = []
+        if redacted_fields:
+            session.phase = TuningPhase.INTAKE
+            prompt = _format_profile_completion_prompt(candidate, requirements, redacted_fields)
+            session._intake_conversation = [
+                {"role": "user", "content": session.task_description},
+                {"role": "assistant", "content": prompt},
+            ]
+            return prompt
+
+        session.requirements = requirements
+        session.phase = TuningPhase.EXECUTION
+        self._start_execution_task(session, session_key, origin_channel, origin_chat_id)
+        return _format_saved_profile_execution(candidate, requirements)
+
+    async def _advance_intake(
+        self,
+        session: TuningSession,
+        conversation: list[dict[str, Any]],
+        *,
+        session_key: str,
+        origin_channel: str,
+        origin_chat_id: str,
+    ) -> str:
+        session.intake_turn_count += 1
+        response, updated_conversation, requirements = await run_intake_turn(
+            runner=self.runner,
+            provider=self.provider,
+            model=self.model,
+            workspace=str(self.workspace),
+            conversation=conversation,
+            max_tool_result_chars=self.max_tool_result_chars,
+        )
+        session._intake_conversation = updated_conversation
+
+        if requirements is not None:
+            return self._complete_requirements(
+                session,
+                requirements,
+                session_key=session_key,
+                origin_channel=origin_channel,
+                origin_chat_id=origin_chat_id,
+            )
+        if session.intake_turn_count >= session.max_intake_turns:
+            self._cleanup_session(session_key)
+            logger.warning(
+                "Intake exceeded max turns ({}) for session {}",
+                session.max_intake_turns,
+                session_key,
+            )
+            return (
+                f"I wasn't able to collect all the tuning requirements after "
+                f"{session.intake_turn_count} exchanges. Let's start over — "
+                f"please try again with a more specific request, "
+                f"including the target system, host, port, and config file path."
+            )
+        if response is None:
+            return "I encountered an issue processing your tuning request. Could you rephrase?"
+        return response
+
+    def _complete_requirements(
+        self,
+        session: TuningSession,
+        requirements: TuningRequirements,
+        *,
+        session_key: str,
+        origin_channel: str,
+        origin_chat_id: str,
+    ) -> str:
+        session.requirements = requirements
+        session.phase = TuningPhase.EXECUTION
+        saved_profile = self.profile_store.save_requirements(
+            requirements,
+            task_description=session.task_description,
+        )
+        self._start_execution_task(session, session_key, origin_channel, origin_chat_id)
+        return _format_requirements_collected(requirements, saved_profile)
 
     def _is_execution_running(self, session_key: str) -> bool:
         task = self._execution_tasks.get(session_key)
@@ -287,20 +358,24 @@ class TuningSessionManager:
         from nanobot.agent.tuning.executor import run_execution
         from nanobot.utils.prompt_templates import render_template
 
+        async def _publish_progress(message: str) -> None:
+            await self.bus.publish_outbound(OutboundMessage(
+                channel=origin_channel,
+                chat_id=origin_chat_id,
+                content=message,
+                metadata={"_progress": True, "tuning_task_id": session.task_id},
+            ))
+
         try:
             report, structured = await run_execution(
                 session, str(self.workspace),
                 provider=self.provider,
                 model=self.model,
+                report_progress=_publish_progress,
             )
             session.phase = TuningPhase.DONE
             session.final_report = report
-
-            # Populate structured results on session
-            session.best_config = structured.get("best_config", {})
-            session.best_metrics = structured.get("best_metrics", {})
-            session.improvement_history = structured.get("improvement_history", [])
-            session.trials_completed = structured.get("trials_completed", 0)
+            session.apply_execution_result(structured)
 
             # ── Archive tuning result to nanobot memory ──────────────────
             await self._archive_to_memory(session, structured)
@@ -349,8 +424,11 @@ class TuningSessionManager:
 
         # Cleanup session on success only — keep on error so retry reuses intake
         if session.phase == TuningPhase.DONE:
-            self._sessions.pop(session_key, None)
-            self._intake_locks.pop(session_key, None)
+            self._cleanup_session(session_key)
+
+    def _cleanup_session(self, session_key: str) -> None:
+        self._sessions.pop(session_key, None)
+        self._intake_locks.pop(session_key, None)
 
     async def _archive_to_memory(
         self, session: TuningSession, structured: dict[str, Any]
@@ -397,26 +475,6 @@ class TuningSessionManager:
         except Exception as e:
             logger.warning("failed to archive tuning result to memory", error=str(e)[:100])
 
-
-_TARGET_SYSTEM_PATTERNS = {
-    "redis": re.compile(r"\bredis\b", re.IGNORECASE | re.ASCII),
-    "mysql": re.compile(r"\bmysql\b", re.IGNORECASE | re.ASCII),
-}
-_PROFILE_SKIP_KEYWORDS = {
-    "none", "skip", "manual", "new", "no", "不用", "不使用", "跳过", "重新配置", "手动填写",
-}
-
-
-def _infer_target_system(task: str) -> str | None:
-    normalized = task.strip().lower()
-    if not normalized:
-        return None
-    for system, pattern in _TARGET_SYSTEM_PATTERNS.items():
-        if pattern.search(normalized):
-            return system
-    return None
-
-
 def _format_profile_selection_prompt(
     target_system: str,
     candidates: list[dict[str, Any]],
@@ -460,7 +518,7 @@ def _parse_profile_selection(
     normalized = response.strip().lower()
     if not normalized:
         return None
-    if normalized in _PROFILE_SKIP_KEYWORDS:
+    if normalized in PROFILE_SKIP_KEYWORDS:
         return "skip"
     if normalized.isdigit():
         idx = int(normalized) - 1
@@ -478,7 +536,7 @@ def _parse_profile_selection(
 
 def _format_profile_completion_prompt(
     candidate: dict[str, Any],
-    requirements: Any,
+    requirements: TuningRequirements,
     redacted_fields: list[str],
 ) -> str:
     missing = ", ".join(redacted_fields)
@@ -492,4 +550,53 @@ def _format_profile_completion_prompt(
         f"- Missing sensitive fields: {missing}\n\n"
         "Please provide the missing values and confirm the target details. "
         "When the requirements are complete, I will continue with tuning."
+    )
+
+
+def _format_execution_already_running(session: TuningSession) -> str:
+    return (
+        "Tuning execution is already running in the background.\n\n"
+        f"{session.execution_summary()}\n"
+        "You will be notified when it completes."
+    )
+
+
+def _format_execution_retry(session: TuningSession) -> str:
+    return (
+        "Retrying tuning execution with existing requirements:\n\n"
+        f"{session.execution_summary()}\n"
+        "Tuning is running in the background. You will be notified when it completes."
+    )
+
+
+def _format_saved_profile_execution(
+    candidate: dict[str, Any],
+    requirements: TuningRequirements,
+) -> str:
+    return (
+        "Using saved tuning profile and starting execution:\n\n"
+        f"- Profile: {candidate.get('name', Path(str(candidate.get('path', ''))).stem)}\n"
+        f"- Profile YAML: {candidate.get('path', '')}\n"
+        f"- Target: {requirements.target_system} {requirements.target_version}\n"
+        f"- Host: {requirements.host}:{requirements.port}\n"
+        f"- Config: {requirements.config_file}\n"
+        f"- Goals: {requirements.goals_summary()}\n\n"
+        "Tuning is running in the background. You will be notified when it completes."
+    )
+
+
+def _format_requirements_collected(
+    requirements: TuningRequirements,
+    saved_profile: Path,
+) -> str:
+    return (
+        "Requirements collected. Starting tuning execution:\n\n"
+        f"- Target: {requirements.target_system} {requirements.target_version}\n"
+        f"- Goals: {requirements.goals_summary()}\n"
+        f"- Max Trials: {requirements.max_trials}\n"
+        f"- Allow Restart: {requirements.allow_restart}\n"
+        f"- Risk Level: {requirements.max_risk_level}\n"
+        f"- Benchmark Profile: {requirements.benchmark_profile_path or 'inline commands'}\n"
+        f"- Saved Profile: {saved_profile}\n\n"
+        "Tuning is running in the background. You will be notified when it completes."
     )
