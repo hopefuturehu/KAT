@@ -1,4 +1,4 @@
-"""Route Redis tuning requests into an internal LangGraph tuning flow."""
+"""Route tuning requests into an internal LangGraph tuning flow."""
 
 from __future__ import annotations
 
@@ -16,7 +16,10 @@ if TYPE_CHECKING:
     from nanobot.providers.base import LLMProvider
 
 
-_REDIS_RE = re.compile(r"\bredis\b", re.IGNORECASE)
+_TARGET_SYSTEM_PATTERNS = {
+    "redis": re.compile(r"\bredis\b", re.IGNORECASE),
+    "mysql": re.compile(r"\bmysql\b", re.IGNORECASE),
+}
 _TUNING_KEYWORDS = (
     "tune", "tuning", "optimize", "optimization", "benchmark",
     "throughput", "latency", "qps", "rps", "performance",
@@ -47,7 +50,7 @@ class TuningRouteState(TypedDict, total=False):
 
 
 class TuningIntentRouter:
-    """Route Redis tuning requests outside the main tool loop."""
+    """Route tuning requests outside the main tool loop."""
 
     sender_id = "tuning"
 
@@ -83,11 +86,20 @@ class TuningIntentRouter:
     # Keyword-based intent detection
     # ------------------------------------------------------------------
 
-    def _looks_like_redis_tuning_request(self, message: str) -> bool:
+    def _detect_target_system(self, message: str) -> str | None:
+        normalized = message.strip().lower()
+        if not normalized:
+            return None
+        for system, pattern in _TARGET_SYSTEM_PATTERNS.items():
+            if pattern.search(normalized):
+                return system
+        return None
+
+    def _looks_like_tuning_request(self, message: str) -> bool:
         normalized = message.strip().lower()
         if not normalized:
             return False
-        if not _REDIS_RE.search(normalized):
+        if self._detect_target_system(normalized) is None:
             return False
         return any(keyword in normalized for keyword in _TUNING_KEYWORDS)
 
@@ -125,9 +137,10 @@ class TuningIntentRouter:
             should_route = True
             route_reason = "retry_after_error"
             task = session.task_description
-        elif self._looks_like_redis_tuning_request(message):
+        elif self._looks_like_tuning_request(message):
             should_route = True
-            route_reason = "redis_tuning_intent"
+            target_system = self._detect_target_system(message) or "unknown"
+            route_reason = f"{target_system}_tuning_intent"
 
         return {
             **state,

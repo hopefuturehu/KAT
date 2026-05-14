@@ -1,7 +1,6 @@
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
-
-import pytest
 
 from nanobot.agent.loop import AgentLoop
 from nanobot.agent.tuning.schema import TuningPhase
@@ -14,8 +13,7 @@ from nanobot.bus.queue import MessageBus
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_redis_tuning_is_routed_without_main_agent_run(tmp_path: Path) -> None:
+def test_redis_tuning_is_routed_without_main_agent_run(tmp_path: Path) -> None:
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
 
@@ -35,12 +33,14 @@ async def test_redis_tuning_is_routed_without_main_agent_run(tmp_path: Path) -> 
         return_value="Requirements collected. Starting tuning execution."
     )
 
-    outbound = await loop._process_message(
-        InboundMessage(
-            channel="cli",
-            sender_id="user",
-            chat_id="direct",
-            content="请帮我调优 redis 吞吐量",
+    outbound = asyncio.run(
+        loop._process_message(
+            InboundMessage(
+                channel="cli",
+                sender_id="user",
+                chat_id="direct",
+                content="请帮我调优 redis 吞吐量",
+            )
         )
     )
 
@@ -54,8 +54,7 @@ async def test_redis_tuning_is_routed_without_main_agent_run(tmp_path: Path) -> 
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_normal_message_not_routed(tmp_path: Path) -> None:
+def test_normal_message_not_routed(tmp_path: Path) -> None:
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
 
@@ -78,12 +77,14 @@ async def test_normal_message_not_routed(tmp_path: Path) -> None:
         return_value=("Hello!", [], [{"role": "assistant", "content": "Hello!"}], "ok", False)
     )
 
-    outbound = await loop._process_message(
-        InboundMessage(
-            channel="cli",
-            sender_id="user",
-            chat_id="direct",
-            content="what is redis used for",  # no tuning keywords
+    outbound = asyncio.run(
+        loop._process_message(
+            InboundMessage(
+                channel="cli",
+                sender_id="user",
+                chat_id="direct",
+                content="what is redis used for",  # no tuning keywords
+            )
         )
     )
 
@@ -99,8 +100,7 @@ async def test_normal_message_not_routed(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_escape_keyword_cancels_tuning_session(tmp_path: Path) -> None:
+def test_escape_keyword_cancels_tuning_session(tmp_path: Path) -> None:
     loop = AgentLoop(
         bus=MessageBus(),
         provider=MagicMock(get_default_model=MagicMock(return_value="test-model")),
@@ -114,11 +114,13 @@ async def test_escape_keyword_cancels_tuning_session(tmp_path: Path) -> None:
     )
 
     # "cancel tuning" should NOT route — it should cancel the session instead
-    result = await loop.tuning.route_message(
-        message="cancel tuning",
-        session_key="cli:direct",
-        origin_channel="cli",
-        origin_chat_id="direct",
+    result = asyncio.run(
+        loop.tuning.route_message(
+            message="cancel tuning",
+            session_key="cli:direct",
+            origin_channel="cli",
+            origin_chat_id="direct",
+        )
     )
 
     assert result is None  # not routed
@@ -130,8 +132,7 @@ async def test_escape_keyword_cancels_tuning_session(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_tuning_system_message_is_persisted(tmp_path: Path) -> None:
+def test_tuning_system_message_is_persisted(tmp_path: Path) -> None:
     provider = MagicMock()
     provider.get_default_model.return_value = "test-model"
 
@@ -145,13 +146,15 @@ async def test_tuning_system_message_is_persisted(tmp_path: Path) -> None:
         return_value=("ack", [], [{"role": "assistant", "content": "ack"}], "ok", False)
     )
 
-    outbound = await loop._process_system_message(
-        InboundMessage(
-            channel="system",
-            sender_id="tuning",
-            chat_id="cli:direct",
-            content="## Tuning Report",
-            metadata={"injected_event": "tuning_result", "tuning_task_id": "abc123"},
+    outbound = asyncio.run(
+        loop._process_system_message(
+            InboundMessage(
+                channel="system",
+                sender_id="tuning",
+                chat_id="cli:direct",
+                content="## Tuning Report",
+                metadata={"injected_event": "tuning_result", "tuning_task_id": "abc123"},
+            )
         )
     )
 
@@ -168,13 +171,9 @@ async def test_tuning_system_message_is_persisted(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_missing_dependency_fails_fast() -> None:
+def test_missing_dependency_fails_fast() -> None:
     from nanobot.agent.tuning.executor import _check_dependencies
 
-    # docker is not installed in the test env; structlog may or may not be
-    missing = _check_dependencies("docker")
-    assert "docker" in missing  # docker mode requires docker
-
-    missing_direct = _check_dependencies("direct")
-    assert "docker" not in missing_direct  # direct mode does not require docker
+    missing = _check_dependencies()
+    assert isinstance(missing, list)
+    assert "langgraph" in missing or "structlog" in missing or "skopt" in missing

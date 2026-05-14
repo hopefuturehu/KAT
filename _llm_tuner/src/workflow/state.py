@@ -119,7 +119,9 @@ class ExperimentState(BaseModel):
 
     # Safety
     max_changes_per_trial: int = 4
+    allow_restart: bool = False
     max_restart_changes: int = 2
+    max_risk_level: str = "medium"
     max_consecutive_rollbacks: int = 3
     consecutive_rollbacks: int = 0
     memory_headroom_pct: int = 20

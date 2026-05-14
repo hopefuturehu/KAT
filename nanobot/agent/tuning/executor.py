@@ -38,8 +38,10 @@ async def _build_experiment_state(req: TuningRequirements) -> Any:
         max_trials=req.max_trials,
         max_duration_hours=req.max_duration_hours,
         blocklist=req.blocked_parameters,
+        allow_restart=req.allow_restart,
         memory_headroom_pct=req.memory_headroom_pct,
         max_restart_changes=req.max_restart_changes,
+        max_risk_level=req.max_risk_level,
         # Connection
         direct_mode=True,
         target_host=req.host,
@@ -142,6 +144,11 @@ async def run_execution(
         return f"## Tuning Failed\n\n{msg}", {}
 
     try:
+        execution_issue = _validate_execution_requirements(req)
+        if execution_issue:
+            logger.error(execution_issue)
+            return f"## Tuning Failed\n\n{execution_issue}", {}
+
         state = await _build_experiment_state(req)
 
         # Load baseline config from target
@@ -150,7 +157,8 @@ async def run_execution(
         else:
             msg = (
                 "Direct-connect mode requires host, port, and config file path. "
-                "Please provide your target instance connection details."
+                "A benchmark profile can replace inline benchmark commands, but it does not "
+                "replace the connection details needed to read and write the target config."
             )
             logger.error(msg)
             return f"## Tuning Failed\n\n{msg}", {}
@@ -189,6 +197,21 @@ async def run_execution(
         return f"## Tuning Failed\n\nError: {e}\n\nProgress:\n" + "\n".join(
             session.progress_messages
         ), {}
+
+
+def _validate_execution_requirements(req: TuningRequirements) -> str | None:
+    """Ensure intake produced an executable tuning request."""
+    if not req.host or not req.config_file:
+        return (
+            "Direct-connect mode requires host, port, and config file path. "
+            "Please provide the target instance connection details."
+        )
+    if not req.run_command and not req.benchmark_profile_path:
+        return (
+            "A tuning run needs either a benchmark profile path or a run command. "
+            "Please provide one of them before execution."
+        )
+    return None
 
 
 def _reconstruct_state(original: Any, event: dict[str, Any]) -> Any:

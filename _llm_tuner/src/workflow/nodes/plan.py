@@ -1,9 +1,8 @@
 """Plan node: invoke Hybrid Tuner (LLM + Bayesian fallback) or Advisor Agent to propose next steps."""
-
-import json
 from src.workflow.state import ExperimentState, ExperimentPhase
 from src.agents.advisor_agent import AdvisorAgent
 from src.knowledge.retriever import knowledge_base
+from src.parameters.schema import ParameterRisk
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -27,7 +26,12 @@ async def _invoke_tuner(state: ExperimentState) -> ExperimentState:
     from src.optimization.hybrid_tuner import HybridTuner
 
     pm = ParameterManager(state.target_system)
-    tunable = pm.get_tunable_parameters()
+    tunable = pm.get_tunable_parameters(
+        exclude_parameters=state.blocklist,
+        max_risk=_parse_max_risk(state.max_risk_level),
+    )
+    if not state.allow_restart:
+        tunable = [p for p in tunable if not p.restart_required]
 
     tunable_dicts = [
         {
@@ -41,6 +45,8 @@ async def _invoke_tuner(state: ExperimentState) -> ExperimentState:
             "enum_values": p.enum_values,
             "restart_required": p.restart_required,
             "risk": p.risk.value,
+            "depends_on": p.depends_on,
+            "conflicts_with": p.conflicts_with,
             "notes": p.notes,
         }
         for p in tunable
@@ -83,7 +89,9 @@ async def _invoke_tuner(state: ExperimentState) -> ExperimentState:
             "target_version": state.target_version,
             "goals": [g.model_dump() for g in state.goals],
             "max_changes_per_trial": state.max_changes_per_trial,
+            "allow_restart": state.allow_restart,
             "max_restart_changes": state.max_restart_changes,
+            "max_risk_level": state.max_risk_level,
             "blocklist": state.blocklist,
         },
         analysis=analysis,
@@ -147,3 +155,11 @@ async def _invoke_advisor(state: ExperimentState) -> ExperimentState:
     state.phase = ExperimentPhase.ADVISING
     logger.info("advisor recommendations generated", count=len(recommendations.get("recommendations", [])))
     return state
+
+
+def _parse_max_risk(risk_level: str) -> ParameterRisk:
+    try:
+        return ParameterRisk(str(risk_level).lower())
+    except ValueError:
+        logger.warning("unknown max risk level, defaulting to medium", risk_level=risk_level)
+        return ParameterRisk.MEDIUM

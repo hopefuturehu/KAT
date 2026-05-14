@@ -83,15 +83,18 @@ def _requirements_complete(req: TuningRequirements) -> bool:
         return False
     if req.target_system not in ("redis", "mysql"):
         return False
-    # Must have either host+config_file or a benchmark_profile_path
+    # Tuning always needs a live target plus a writable config file.
     if not req.host or not req.config_file:
+        return False
+    # The benchmark can come from an inline command or a reusable YAML profile.
+    if not req.run_command and not req.benchmark_profile_path:
         return False
     return True
 
 
 async def run_intake_turn(
     runner: AgentRunner,
-    provider: LLMProvider,
+    _provider: LLMProvider,
     model: str,
     workspace: str,
     conversation: list[dict[str, Any]],

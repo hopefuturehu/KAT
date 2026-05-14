@@ -48,6 +48,13 @@ async def apply_configuration(state: ExperimentState) -> ExperimentState:
         for p in state.tunable_parameters
         if p["name"] in [c["parameter"] for c in changes]
     )
+    if needs_restart and not state.allow_restart:
+        logger.error("restart-requiring change blocked by allow_restart=false")
+        state.errors.append("Restart-requiring changes are not allowed for this tuning run")
+        if state.current_trial is not None:
+            state.current_trial.status = "failed"
+        state.orchestrator_decision = {"action": "ROLLBACK"}
+        return state
 
     # Apply config using the generic direct runner
     try:
