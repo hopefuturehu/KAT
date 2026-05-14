@@ -1,0 +1,13 @@
+# Redis benchmark with custom lifecycle commands
+name: redis-custom-cmd
+runner_type: custom
+tests: ["set", "get", "lpush"]
+clients: 50
+requests: 100000
+duration_sec: 30
+output_format: redis-benchmark-csv
+start_command: ""
+run_command: "redis-benchmark -h {host} -p {port} -c {clients} -n {requests} -t {tests} --csv"
+teardown_command: ""
+health_check_command: "redis-cli -h {host} -p {port} PING"
+restart_command: ""

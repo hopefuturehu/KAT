@@ -311,3 +311,69 @@ def safe_extract_json(text: str, default: Any = None) -> Any:
 class ToolCallLoopExceededError(Exception):
     """Raised when the LLM tool-call loop exceeds the maximum iterations."""
     pass
+
+
+# ── Resilience manager (per-provider isolation) ───────────────────────────────
+
+
+class ResilienceManager:
+    """Manages per-provider rate limiter and circuit breaker instances.
+
+    Unlike the old singleton pattern, each provider gets its own limiter
+    and breaker so a DeepSeek outage does not trip the Anthropic breaker.
+    """
+
+    def __init__(
+        self,
+        default_rate_limit_rps: float = 5.0,
+        default_failure_threshold: int = 5,
+        default_recovery_timeout: float = 30.0,
+    ):
+        self._default_rps = default_rate_limit_rps
+        self._default_failure = default_failure_threshold
+        self._default_recovery = default_recovery_timeout
+        self._limiters: dict[str, RateLimiter] = {}
+        self._breakers: dict[str, CircuitBreaker] = {}
+
+    def get_limiter(self, provider: str, rate_limit_rps: float | None = None) -> RateLimiter:
+        if provider not in self._limiters:
+            rps = rate_limit_rps if rate_limit_rps is not None else self._default_rps
+            self._limiters[provider] = RateLimiter(max_tokens=rps, refill_rate=rps)
+        return self._limiters[provider]
+
+    def get_breaker(
+        self,
+        provider: str,
+        failure_threshold: int | None = None,
+        recovery_timeout: float | None = None,
+    ) -> CircuitBreaker:
+        if provider not in self._breakers:
+            ft = failure_threshold if failure_threshold is not None else self._default_failure
+            rt = recovery_timeout if recovery_timeout is not None else self._default_recovery
+            self._breakers[provider] = CircuitBreaker(
+                failure_threshold=ft, recovery_timeout=rt
+            )
+        return self._breakers[provider]
+
+    async def acquire(self, provider: str, rate_limit_rps: float | None = None) -> None:
+        """Acquire a rate-limit token for *provider*."""
+        await self.get_limiter(provider, rate_limit_rps).acquire()
+
+    async def call(
+        self,
+        provider: str,
+        fn: Callable[..., T],
+        *args: Any,
+        rate_limit_rps: float | None = None,
+        failure_threshold: int | None = None,
+        recovery_timeout: float | None = None,
+        **kwargs: Any,
+    ) -> T:
+        """Execute *fn* with per-provider circuit breaker protection."""
+        breaker = self.get_breaker(provider, failure_threshold, recovery_timeout)
+
+        async def _wrapped():
+            await self.acquire(provider, rate_limit_rps)
+            return await fn(*args, **kwargs)
+
+        return await breaker.call(_wrapped)

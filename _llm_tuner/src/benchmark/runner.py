@@ -17,7 +17,7 @@ logger = get_logger(__name__)
 @dataclass
 class BenchmarkProfile:
     name: str
-    runner_type: str
+    runner_type: str = "custom"
     tests: list[str] = field(default_factory=list)
     clients: int = 50
     requests: int = 1_000_000
@@ -27,6 +27,20 @@ class BenchmarkProfile:
     pipeline: int = 1
     threads: int = 1
     extra_args: dict[str, Any] = field(default_factory=dict)
+
+    # User-provided lifecycle commands (shell templates)
+    start_command: str = ""
+    run_command: str = ""
+    teardown_command: str = ""
+    health_check_command: str = ""
+    restart_command: str = ""
+
+    # Output parsing
+    output_format: str = "redis-benchmark-csv"
+    metric_regex: dict[str, str] = field(default_factory=dict)
+
+    # Environment
+    env_vars: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict) -> "BenchmarkProfile":

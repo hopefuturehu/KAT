@@ -59,12 +59,33 @@ class ExperimentState(BaseModel):
 
     # Environment
     container_id: str = ""
-    direct_mode: bool = False  # True when using --host (direct connect, no Docker)
+    direct_mode: bool = True  # Always direct mode (Docker path is DEPRECATED)
     direct_config_path: str = ""
     direct_benchmark_cmd: str = ""
+
+    # Generic connection details (replaces redis_host/redis_port/redis_password)
+    target_host: str = "127.0.0.1"
+    target_port: str = "6379"
+    target_credentials: str = ""
+
+    # DEPRECATED — kept for backward compat, mapped to target_* on init
     redis_host: str = ""
     redis_port: str = ""
     redis_password: str = ""
+
+    # User-provided lifecycle commands (shell templates)
+    start_command: str = ""
+    run_command: str = ""
+    teardown_command: str = ""
+    health_check_command: str = ""
+    restart_command: str = ""
+
+    # Output parsing config
+    output_format: str = "redis-benchmark-csv"
+    metric_regex: dict[str, str] = Field(default_factory=dict)
+
+    # Benchmark profile path (YAML)
+    benchmark_profile_path: str = ""
 
     # Stability benchmark settings
     stable_mode: bool = False  # enable warmup + multi-iteration median

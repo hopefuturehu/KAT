@@ -12,9 +12,8 @@ from pydantic import BaseModel
 
 from src.config import settings
 from src.utils.llm_resilience import (
-    CircuitBreaker,
     CircuitBreakerOpenError,
-    RateLimiter,
+    ResilienceManager,
     ToolCallLoopExceededError,
     async_retry,
 )
@@ -33,17 +32,20 @@ class AgentTool(BaseModel):
         arbitrary_types_allowed = True
 
 
-# ── Provider-shared rate limiter and circuit breaker ────────────────────────
+# ── Per-provider resilience manager ──────────────────────────────────────────
 
-_rate_limiter = RateLimiter(
-    max_tokens=settings.llm_rate_limit_rps,
-    refill_rate=settings.llm_rate_limit_rps,
+_resilience = ResilienceManager(
+    default_rate_limit_rps=settings.llm_rate_limit_rps,
+    default_failure_threshold=settings.llm_circuit_breaker_failures,
+    default_recovery_timeout=settings.llm_circuit_breaker_recovery,
 )
 
-_circuit_breaker = CircuitBreaker(
-    failure_threshold=settings.llm_circuit_breaker_failures,
-    recovery_timeout=settings.llm_circuit_breaker_recovery,
-)
+# Per-provider RPS overrides (None = use default)
+_PROVIDER_RPS: dict[str, float | None] = {
+    "anthropic": settings.llm_rate_limit_rps_anthropic,
+    "deepseek": settings.llm_rate_limit_rps_deepseek,
+    "openai": settings.llm_rate_limit_rps_openai,
+}
 
 
 class BaseAgent(ABC):
@@ -174,10 +176,9 @@ class BaseAgent(ABC):
                 })
 
     async def _execute_openai_call(self, *, client, messages, tools, temperature) -> Any:
-        """Single OpenAI API call wrapped with rate limiting and circuit breaker."""
+        """Single OpenAI API call wrapped with per-provider rate limiting and circuit breaker."""
 
         async def _call():
-            await _rate_limiter.acquire()
             return await client.chat.completions.create(
                 model=self.model,
                 messages=messages,
@@ -187,13 +188,15 @@ class BaseAgent(ABC):
                 timeout=settings.llm_request_timeout,
             )
 
-        return await _circuit_breaker.call(
+        return await _resilience.call(
+            self.provider,
             lambda: async_retry(
                 _call,
                 max_retries=settings.llm_max_retries,
                 base_delay=settings.llm_retry_base_delay,
                 max_delay=settings.llm_retry_max_delay,
-            )
+            ),
+            rate_limit_rps=_PROVIDER_RPS.get(self.provider),
         )
 
     # ── Anthropic invocation ───────────────────────────────────────────────
@@ -262,10 +265,9 @@ class BaseAgent(ABC):
                     })
 
     async def _execute_anthropic_call(self, *, client, system_prompt, messages, tools, temperature) -> Any:
-        """Single Anthropic API call wrapped with rate limiting and circuit breaker."""
+        """Single Anthropic API call wrapped with per-provider rate limiting and circuit breaker."""
 
         async def _call():
-            await _rate_limiter.acquire()
             return await client.messages.create(
                 model=self.model,
                 max_tokens=settings.llm_max_tokens,
@@ -275,13 +277,15 @@ class BaseAgent(ABC):
                 temperature=temperature or settings.llm_temperature,
             )
 
-        return await _circuit_breaker.call(
+        return await _resilience.call(
+            self.provider,
             lambda: async_retry(
                 _call,
                 max_retries=settings.llm_max_retries,
                 base_delay=settings.llm_retry_base_delay,
                 max_delay=settings.llm_retry_max_delay,
-            )
+            ),
+            rate_limit_rps=_PROVIDER_RPS.get(self.provider),
         )
 
     # ── Unified invoke ─────────────────────────────────────────────────────

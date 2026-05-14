@@ -22,7 +22,7 @@ def _extract_json(text: str) -> dict[str, Any] | None:
             return json.loads(m.group(1))
         except json.JSONDecodeError:
             pass
-    # Try bare JSON object
+    # Try bare JSON object containing target_system
     m = re.search(r"\{[^{}]*\"target_system\"[^{}]*\}", text, re.DOTALL)
     if m:
         try:
@@ -51,6 +51,22 @@ def _parse_requirements(data: dict[str, Any]) -> TuningRequirements:
         port=str(data.get("port", "")),
         password=data.get("password", ""),
         config_file=data.get("config_file", ""),
+        # Lifecycle commands
+        start_command=data.get("start_command", ""),
+        run_command=data.get("run_command", ""),
+        teardown_command=data.get("teardown_command", ""),
+        health_check_command=data.get("health_check_command", ""),
+        restart_command=data.get("restart_command", ""),
+        # Output parsing
+        output_format=data.get("output_format", "redis-benchmark-csv"),
+        metric_regex=data.get("metric_regex", {}),
+        # Benchmark profile
+        benchmark_profile_path=data.get("benchmark_profile_path", ""),
+        # Stability
+        stable_mode=data.get("stable_mode", False),
+        stable_warmup_requests=int(data.get("stable_warmup_requests", 10000)),
+        stable_iterations=int(data.get("stable_iterations", 3)),
+        # Constraints
         allow_restart=data.get("allow_restart", False),
         max_restart_changes=int(data.get("max_restart_changes", 2)),
         max_risk_level=data.get("max_risk_level", "medium"),
@@ -66,6 +82,9 @@ def _requirements_complete(req: TuningRequirements) -> bool:
     if not req.target_system or not req.goals:
         return False
     if req.target_system not in ("redis", "mysql"):
+        return False
+    # Must have either host+config_file or a benchmark_profile_path
+    if not req.host or not req.config_file:
         return False
     return True
 

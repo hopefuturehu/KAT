@@ -59,6 +59,7 @@ class TuningIntentRouter:
         model: str | None = None,
         max_tool_result_chars: int = 16000,
         schedule_background: Any | None = None,
+        memory_store: Any = None,
     ) -> None:
         self.manager = TuningSessionManager(
             provider=provider,
@@ -67,6 +68,7 @@ class TuningIntentRouter:
             model=model,
             max_tool_result_chars=max_tool_result_chars,
             schedule_background=schedule_background,
+            memory_store=memory_store,
         )
         self._graph: Any | None = None
 

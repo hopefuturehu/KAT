@@ -1,4 +1,4 @@
-"""Run the in-repo `_llm_tuner` LangGraph workflow."""
+"""Run the in-repo `_llm_tuner` LangGraph workflow (direct mode only)."""
 
 from __future__ import annotations
 
@@ -40,29 +40,48 @@ async def _build_experiment_state(req: TuningRequirements) -> Any:
         blocklist=req.blocked_parameters,
         memory_headroom_pct=req.memory_headroom_pct,
         max_restart_changes=req.max_restart_changes,
+        # Connection
+        direct_mode=True,
+        target_host=req.host,
+        target_port=req.port,
+        target_credentials=req.password,
+        direct_config_path=req.config_file,
+        # Lifecycle commands
+        start_command=req.start_command,
+        run_command=req.run_command,
+        teardown_command=req.teardown_command,
+        health_check_command=req.health_check_command,
+        restart_command=req.restart_command,
+        # Output parsing
+        output_format=req.output_format,
+        metric_regex=req.metric_regex,
+        # Benchmark profile
+        benchmark_profile_path=req.benchmark_profile_path,
+        # Stability
+        stable_mode=req.stable_mode,
+        stable_warmup_requests=req.stable_warmup_requests,
+        stable_iterations=req.stable_iterations,
     )
-
-    # Direct-connect mode
-    if req.host:
-        state.direct_mode = True
-        state.redis_host = req.host
-        state.redis_port = req.port
-        state.redis_password = req.password
-        state.direct_config_path = req.config_file
 
     return state
 
 
 async def _setup_direct_mode(state: Any, req: TuningRequirements) -> None:
-    """Configure state for direct-connect Redis mode."""
-    from src.benchmark.direct_runner import DirectRedisRunner
+    """Load baseline config from the target instance via the direct runner."""
+    from src.benchmark.custom_direct_runner import CustomDirectRunner
+    from src.benchmark.runner import BenchmarkProfile
 
-    runner = DirectRedisRunner(
+    profile = BenchmarkProfile(
+        name="baseline-load",
+        health_check_command=req.health_check_command,
+    )
+
+    runner = CustomDirectRunner(
+        profile=profile,
         config_path=req.config_file,
         host=req.host,
         port=req.port,
-        password=req.password,
-        benchmark_cmd="",
+        credentials=req.password,
     )
     state.container_id = f"direct-{req.host}:{req.port}"
 
@@ -80,11 +99,10 @@ async def _setup_direct_mode(state: Any, req: TuningRequirements) -> None:
         )
 
 
-def _check_dependencies(mode: str) -> list[str]:
+def _check_dependencies() -> list[str]:
     """Verify all in-repo tuning dependencies are importable."""
     missing: list[str] = []
 
-    # Base deps needed regardless of mode
     for pkg_name, import_name in [
         ("structlog", "structlog"),
         ("langgraph", "langgraph"),
@@ -99,88 +117,47 @@ def _check_dependencies(mode: str) -> list[str]:
         except ImportError:
             missing.append(pkg_name)
 
-    if mode == "docker":
-        try:
-            __import__("docker")
-        except ImportError:
-            missing.append("docker")
-
     return missing
 
 
 async def run_execution(
     session: TuningSession,
     _workspace: str,
-) -> str:
-    """Execute the tuning workflow and return a final report.
+) -> tuple[str, dict[str, Any]]:
+    """Execute the tuning workflow and return (report_md, structured_data).
 
     Progress updates are appended to session.progress_messages.
     """
     req = session.requirements
 
-    # Pre-flight dependency check (fail fast, before intake turns are wasted)
-    mode = "direct" if (req.host and req.config_file) else "docker"
-    missing = _check_dependencies(mode)
+    # Pre-flight dependency check
+    missing = _check_dependencies()
     if missing:
         msg = (
-            f"Missing packages for tuning ({mode} mode): {', '.join(missing)}\n\n"
+            f"Missing packages for tuning: {', '.join(missing)}\n\n"
             f"Install with:  python -m pip install 'nanobot[tuning]'\n"
             f"Or re-run with:  pip install {' '.join(missing)}"
         )
         logger.error(msg)
-        return f"## Tuning Failed\n\n{msg}"
+        return f"## Tuning Failed\n\n{msg}", {}
 
     try:
         state = await _build_experiment_state(req)
 
-        # Setup direct mode if connecting to existing instance
+        # Load baseline config from target
         if req.host and req.config_file:
             await _setup_direct_mode(state, req)
         else:
-            # Docker mode: provision container
-            try:
-                from src.environment.manager import (
-                    TargetEnvironmentManager,
-                    EnvironmentConfig,
-                )
-            except ImportError as e:
-                msg = (
-                    "Docker Python SDK is required for container-based tuning in the in-repo tuner.\n\n"
-                    "Options:\n"
-                    "1. Install tuning extras:  python -m pip install 'nanobot[tuning]'\n"
-                    "2. Ask nanobot to tune your existing Redis instance and include the "
-                    "host/port/config file path in your message.\n"
-                )
-                logger.warning(msg)
-                raise RuntimeError(msg) from e
-
-            env_config = EnvironmentConfig(
-                template=f"{req.target_system}-standalone",
-                cpu_limit="4",
-                memory_limit="8g",
+            msg = (
+                "Direct-connect mode requires host, port, and config file path. "
+                "Please provide your target instance connection details."
             )
-            env_mgr = TargetEnvironmentManager()
-            container = await env_mgr.provision(env_config, state.experiment_id)
-            state.container_id = container.container_id
-
-            # Load baseline config from container
-            config_path_map = {
-                "redis": "/usr/local/etc/redis/redis.conf",
-                "mysql": "/etc/mysql/my.cnf",
-            }
-            config_path = config_path_map.get(req.target_system, "")
-            if config_path and container.container_id:
-                raw_config = await env_mgr.get_config(config_path)
-                if raw_config:
-                    from src.parameters.manager import ParameterManager
-
-                    pm = ParameterManager(state.target_system)
-                    state.current_config = pm.parse_and_validate(raw_config)
-                    state.baseline_config = dict(state.current_config)
+            logger.error(msg)
+            return f"## Tuning Failed\n\n{msg}", {}
 
         # Dry run
         if req.dry_run:
-            return _format_dry_run_report(state)
+            return _format_dry_run_report(state), {}
 
         # Execute workflow
         from src.workflow.graph import create_workflow
@@ -201,14 +178,17 @@ async def run_execution(
         if final_event:
             state = _reconstruct_state(state, final_event)
 
-        return _format_final_report(state, session)
+        report = _format_final_report(state, session)
+        structured = _extract_structured_results(state)
+
+        return report, structured
 
     except Exception as e:
         logger.exception("Tuning execution failed")
         session.progress_messages.append(f"Error: {e}")
         return f"## Tuning Failed\n\nError: {e}\n\nProgress:\n" + "\n".join(
             session.progress_messages
-        )
+        ), {}
 
 
 def _reconstruct_state(original: Any, event: dict[str, Any]) -> Any:
@@ -226,10 +206,26 @@ def _reconstruct_state(original: Any, event: dict[str, Any]) -> Any:
         "elapsed_hours",
         "phase",
         "errors",
+        "advisor_recommendations",
     ):
         if field in event:
             setattr(original, field, event[field])
     return original
+
+
+def _extract_structured_results(state: Any) -> dict[str, Any]:
+    """Extract structured tuning data for archiving and session storage."""
+    return {
+        "best_config": dict(getattr(state, "best_config", {})),
+        "best_metrics": dict(getattr(state, "best_metrics", {})),
+        "improvement_history": list(getattr(state, "improvement_history", [])),
+        "trials_completed": getattr(state, "trial_number", 0),
+        "target_system": getattr(state, "target_system", ""),
+        "target_version": getattr(state, "target_version", ""),
+        "experiment_name": getattr(state, "experiment_name", ""),
+        "elapsed_hours": getattr(state, "elapsed_hours", 0.0),
+        "advisor_recommendations": dict(getattr(state, "advisor_recommendations", {})),
+    }
 
 
 def _format_dry_run_report(state: Any) -> str:
@@ -284,7 +280,9 @@ def _format_final_report(state: Any, _session: TuningSession) -> str:
     if state.improvement_history:
         improvements = [f"{x:+.1f}%" for x in state.improvement_history[-5:]]
         lines.append("")
-        lines.append(f"**Improvement History** (last {len(improvements)}): {', '.join(improvements)}")
+        lines.append(
+            f"**Improvement History** (last {len(improvements)}): {', '.join(improvements)}"
+        )
 
     if state.best_config:
         lines.append("")

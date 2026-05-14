@@ -36,6 +36,25 @@ class TuningRequirements:
     password: str = ""
     config_file: str = ""
 
+    # Lifecycle commands (shell templates)
+    start_command: str = ""
+    run_command: str = ""
+    teardown_command: str = ""
+    health_check_command: str = ""
+    restart_command: str = ""
+
+    # Output parsing
+    output_format: str = "redis-benchmark-csv"
+    metric_regex: dict[str, str] = field(default_factory=dict)
+
+    # Benchmark profile (YAML path)
+    benchmark_profile_path: str = ""
+
+    # Stability settings
+    stable_mode: bool = False
+    stable_warmup_requests: int = 10000
+    stable_iterations: int = 3
+
     # Constraints
     allow_restart: bool = False
     max_restart_changes: int = 2
@@ -89,4 +108,11 @@ class TuningSession:
     progress_messages: list[str] = field(default_factory=list)
     final_report: str = ""
     error: str = ""
+
+    # Structured tuning results (populated after execution)
+    best_config: dict[str, str] = field(default_factory=dict)
+    best_metrics: dict[str, float] = field(default_factory=dict)
+    improvement_history: list[float] = field(default_factory=list)
+    trials_completed: int = 0
+
     _intake_conversation: list[dict[str, Any]] = field(default_factory=list)

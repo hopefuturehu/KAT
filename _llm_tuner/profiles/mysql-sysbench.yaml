@@ -1,0 +1,14 @@
+# MySQL benchmark using sysbench
+name: mysql-sysbench
+runner_type: sysbench
+tests: ["oltp_read_write"]
+clients: 10
+duration_sec: 60
+threads: 4
+output_format: sysbench
+run_command: "sysbench oltp_read_write --mysql-host={host} --mysql-port={port} --mysql-user=root --mysql-password={credentials} --tables=10 --table-size=100000 --threads={threads} --time={duration} run"
+health_check_command: "mysqladmin -h{host} -P{port} -uroot -p{credentials} ping"
+extra_args:
+  prepare: false
+  tables: 10
+  table_size: 100000

@@ -1,7 +1,8 @@
 """Apply config node: write config changes, handle restarts, and verify health."""
 
 import copy
-from src.workflow.state import ExperimentState, ExperimentPhase
+
+from src.workflow.state import ExperimentPhase, ExperimentState
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -48,49 +49,50 @@ async def apply_configuration(state: ExperimentState) -> ExperimentState:
         if p["name"] in [c["parameter"] for c in changes]
     )
 
-    # Apply config to target environment
+    # Apply config using the generic direct runner
     try:
+        from src.benchmark.custom_direct_runner import CustomDirectRunner
+        from src.benchmark.runner import BenchmarkProfile
         from src.parameters.manager import ParameterManager
+
         pm = ParameterManager(state.target_system)
         config_text = pm.serialize_config(new_config)
 
-        if state.direct_mode:
-            # Direct mode: write local config file + CONFIG SET
-            from src.benchmark.direct_runner import DirectRedisRunner
-            runner = DirectRedisRunner(
-                config_path=state.direct_config_path,
-                host=state.redis_host,
-                port=state.redis_port,
-                password=state.redis_password,
-                benchmark_cmd=state.direct_benchmark_cmd,
-            )
-            await runner.write_config(config_text, restart=needs_restart)
-            if needs_restart:
-                logger.warning(
-                    "restart-requiring params changed — "
-                    "you may need to restart Redis manually"
+        profile = BenchmarkProfile(
+            name="config-apply",
+            health_check_command=state.health_check_command,
+            restart_command=state.restart_command,
+        )
+
+        host = state.target_host or state.redis_host
+        port = state.target_port or state.redis_port
+        creds = state.target_credentials or state.redis_password
+
+        runner = CustomDirectRunner(
+            profile=profile,
+            config_path=state.direct_config_path,
+            host=host,
+            port=port,
+            credentials=creds,
+        )
+
+        # Snapshot before applying
+        runner.snapshot_config()
+        await runner.write_config(config_text)
+
+        if needs_restart:
+            logger.info("restart-requiring params changed — restarting target")
+            healthy = await runner.restart()
+            if not healthy:
+                logger.warning("health check failed after restart — rolling back")
+                state.errors.append(
+                    f"Health check failed after config change (trial {state.trial_number})"
                 )
-        else:
-            # Docker mode
-            from src.environment.manager import TargetEnvironmentManager
-            env_manager = TargetEnvironmentManager.for_container(state.container_id)
-
-            config_path_map = {
-                "redis": "/usr/local/etc/redis/redis.conf",
-                "mysql": "/etc/mysql/my.cnf",
-            }
-            config_path = config_path_map.get(state.target_system, "/etc/config.conf")
-            await env_manager.apply_config(config_text, config_path, restart=needs_restart)
-
-            if needs_restart:
-                healthy = await env_manager.health_check(timeout=30)
-                if not healthy:
-                    logger.warning("health check failed after restart — rolling back")
-                    state.errors.append(f"Health check failed after config change (trial {state.trial_number})")
-                    if state.current_trial is not None:
-                        state.current_trial.status = "failed"
-                    state.orchestrator_decision = {"action": "ROLLBACK"}
-                    return state
+                if state.current_trial is not None:
+                    state.current_trial.status = "failed"
+                runner.restore_snapshot()
+                state.orchestrator_decision = {"action": "ROLLBACK"}
+                return state
 
         state.current_config = new_config
         logger.info("configuration applied", changed_params=[c["parameter"] for c in changes])

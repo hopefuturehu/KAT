@@ -371,6 +371,7 @@ class AgentLoop:
             model=self.model,
             max_tool_result_chars=self.max_tool_result_chars,
             schedule_background=self._schedule_background,
+            memory_store=self.context.memory,
         )
         self._unified_session = unified_session
         self._max_messages = max_messages if max_messages > 0 else 120

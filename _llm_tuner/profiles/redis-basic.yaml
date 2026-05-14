@@ -1,0 +1,14 @@
+# Redis benchmark using redis-benchmark CLI
+name: redis-basic
+runner_type: redis_benchmark
+tests: ["set", "get", "lpush", "sadd"]
+clients: 50
+requests: 100000
+duration_sec: 30
+key_space_size: 1000000
+data_size: 128
+pipeline: 1
+threads: 1
+output_format: redis-benchmark-csv
+run_command: "redis-benchmark -h {host} -p {port} -c {clients} -n {requests} -t {tests} --csv"
+health_check_command: "redis-cli -h {host} -p {port} PING"
