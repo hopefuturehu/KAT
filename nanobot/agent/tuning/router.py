@@ -17,8 +17,8 @@ if TYPE_CHECKING:
 
 
 _TARGET_SYSTEM_PATTERNS = {
-    "redis": re.compile(r"\bredis\b", re.IGNORECASE),
-    "mysql": re.compile(r"\bmysql\b", re.IGNORECASE),
+    "redis": re.compile(r"\bredis\b", re.IGNORECASE | re.ASCII),
+    "mysql": re.compile(r"\bmysql\b", re.IGNORECASE | re.ASCII),
 }
 _TUNING_KEYWORDS = (
     "tune", "tuning", "optimize", "optimization", "benchmark",
