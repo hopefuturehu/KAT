@@ -21,10 +21,9 @@ _TARGET_SYSTEM_PATTERNS = {
     "mysql": re.compile(r"\bmysql\b", re.IGNORECASE | re.ASCII),
 }
 _TUNING_KEYWORDS = (
-    "tune", "tuning", "optimize", "optimization", "benchmark",
+    "tune", "tuning", "optimize", "optimization",
     "throughput", "latency", "qps", "rps", "performance",
-    "config", "parameter",
-    "调优", "调参", "优化", "性能", "吞吐", "延迟", "基准", "配置", "参数",
+    "调优", "调参", "优化", "性能", "吞吐", "延迟",
 )
 _RETRY_KEYWORDS = (
     "continue", "retry", "rerun", "run again", "try again",

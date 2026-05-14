@@ -1,6 +1,11 @@
 import asyncio
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from nanobot.agent.loop import AgentLoop
 from nanobot.agent.tuning.schema import TuningPhase
@@ -93,6 +98,25 @@ def test_normal_message_not_routed(tmp_path: Path) -> None:
     loop._run_agent_loop.assert_awaited_once()
     # tuning router returned None, so the message was not intercepted
     loop.tuning.route_message = AsyncMock(return_value=None)
+
+
+def test_redis_and_mysql_config_questions_are_not_misrouted(tmp_path: Path) -> None:
+    loop = AgentLoop(
+        bus=MessageBus(),
+        provider=MagicMock(get_default_model=MagicMock(return_value="test-model")),
+        workspace=tmp_path,
+        model="test-model",
+    )
+
+    redis_state = loop.tuning._classify_request(
+        {"message": "redis配置参数有哪些", "session_key": "cli:direct"}
+    )
+    mysql_state = loop.tuning._classify_request(
+        {"message": "mysql 参数说明一下", "session_key": "cli:direct"}
+    )
+
+    assert redis_state["should_route"] is False
+    assert mysql_state["should_route"] is False
 
 
 # ---------------------------------------------------------------------------
