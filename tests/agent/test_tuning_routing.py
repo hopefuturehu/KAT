@@ -169,7 +169,7 @@ async def test_tuning_system_message_is_persisted(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_missing_dependency_fails_fast(tmp_path: Path) -> None:
+async def test_missing_dependency_fails_fast() -> None:
     from nanobot.agent.tuning.executor import _check_dependencies
 
     # docker is not installed in the test env; structlog may or may not be

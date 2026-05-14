@@ -53,6 +53,11 @@ class TuningSessionManager:
     def get_session(self, session_key: str) -> TuningSession | None:
         return self._sessions.get(session_key)
 
+    def cancel_session(self, session_key: str) -> bool:
+        session = self._sessions.pop(session_key, None)
+        self._intake_locks.pop(session_key, None)
+        return session is not None
+
     def _get_lock(self, session_key: str) -> asyncio.Lock:
         if session_key not in self._intake_locks:
             self._intake_locks[session_key] = asyncio.Lock()

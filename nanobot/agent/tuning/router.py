@@ -1,4 +1,4 @@
-"""Route Redis tuning requests directly into the tuning flow, bypassing the main LLM."""
+"""Route Redis tuning requests into an internal LangGraph tuning flow."""
 
 from __future__ import annotations
 
@@ -68,6 +68,7 @@ class TuningIntentRouter:
             max_tool_result_chars=max_tool_result_chars,
             schedule_background=schedule_background,
         )
+        self._graph: Any | None = None
 
     def set_provider(self, provider: "LLMProvider", model: str) -> None:
         self.manager.set_provider(provider, model)
@@ -111,9 +112,7 @@ class TuningIntentRouter:
 
         if self._looks_like_escape_request(message):
             should_route = False
-            if session is not None:
-                self.manager._sessions.pop(session_key, None)
-                self.manager._intake_locks.pop(session_key, None)
+            if session is not None and self.manager.cancel_session(session_key):
                 logger.info("User cancelled tuning session {}", session_key)
         elif session is not None and session.phase == TuningPhase.INTAKE:
             should_route = True
@@ -146,6 +145,28 @@ class TuningIntentRouter:
         )
         return {**state, "response": response}
 
+    def _ensure_graph(self) -> Any | None:
+        if self._graph is not None:
+            return self._graph
+        try:
+            from langgraph.graph import END, START, StateGraph
+        except Exception:
+            logger.exception("Failed to initialize tuning route graph")
+            return None
+
+        graph = StateGraph(TuningRouteState)
+        graph.add_node("classify_request", self._classify_request)
+        graph.add_node("dispatch_request", self._dispatch_request)
+        graph.add_edge(START, "classify_request")
+        graph.add_conditional_edges(
+            "classify_request",
+            lambda state: "dispatch_request" if state.get("should_route") else END,
+            {"dispatch_request": "dispatch_request", END: END},
+        )
+        graph.add_edge("dispatch_request", END)
+        self._graph = graph.compile()
+        return self._graph
+
     async def route_message(
         self,
         *,
@@ -159,16 +180,21 @@ class TuningIntentRouter:
         Returns the tuning response string, or ``None`` when the main agent
         should handle the message normally.
         """
-        state = self._classify_request({
+        initial_state = {
             "message": message,
             "session_key": session_key,
             "origin_channel": origin_channel,
             "origin_chat_id": origin_chat_id,
-        })
+        }
+        state = self._classify_request(initial_state)
         if not state.get("should_route"):
             return None
 
-        result = await self._dispatch_request(state)
+        graph = self._ensure_graph()
+        if graph is None:
+            result = await self._dispatch_request(state)
+        else:
+            result = await graph.ainvoke(state)
         logger.info(
             "Routed session {} into tuning flow via {}",
             session_key,

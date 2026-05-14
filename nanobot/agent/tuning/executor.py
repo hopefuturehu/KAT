@@ -1,15 +1,14 @@
-"""TuningExecutionAgent — runs the llm-tuner LangGraph workflow."""
+"""Run the in-repo `_llm_tuner` LangGraph workflow."""
 
 from __future__ import annotations
 
-import asyncio
 import sys
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
-# Ensure llm_tuner package is importable (preserves 'from src.xxx' imports)
+# Ensure the in-repo `_llm_tuner` package is importable (preserves `from src.xxx` imports)
 _LLM_TUNER_ROOT = Path(__file__).resolve().parent.parent.parent.parent / "_llm_tuner"
 if str(_LLM_TUNER_ROOT) not in sys.path:
     sys.path.insert(0, str(_LLM_TUNER_ROOT))
@@ -82,7 +81,7 @@ async def _setup_direct_mode(state: Any, req: TuningRequirements) -> None:
 
 
 def _check_dependencies(mode: str) -> list[str]:
-    """Verify all llm-tuner dependencies are importable.  Returns missing packages."""
+    """Verify all in-repo tuning dependencies are importable."""
     missing: list[str] = []
 
     # Base deps needed regardless of mode
@@ -111,7 +110,7 @@ def _check_dependencies(mode: str) -> list[str]:
 
 async def run_execution(
     session: TuningSession,
-    workspace: str,
+    _workspace: str,
 ) -> str:
     """Execute the tuning workflow and return a final report.
 
@@ -125,7 +124,7 @@ async def run_execution(
     if missing:
         msg = (
             f"Missing packages for tuning ({mode} mode): {', '.join(missing)}\n\n"
-            f"Install with:  pip install nanobot[tuning]\n"
+            f"Install with:  python -m pip install 'nanobot[tuning]'\n"
             f"Or re-run with:  pip install {' '.join(missing)}"
         )
         logger.error(msg)
@@ -146,12 +145,11 @@ async def run_execution(
                 )
             except ImportError as e:
                 msg = (
-                    "Docker Python SDK is required for container-based tuning.\n\n"
+                    "Docker Python SDK is required for container-based tuning in the in-repo tuner.\n\n"
                     "Options:\n"
-                    "1. Install docker:  pip install nanobot[tuning]\n"
-                    "2. Use direct-connect mode by providing host and config_file:\n"
-                    '   tune_start(task="...", host="127.0.0.1", '
-                    'port="6379", config_file="/opt/homebrew/etc/redis.conf")\n'
+                    "1. Install tuning extras:  python -m pip install 'nanobot[tuning]'\n"
+                    "2. Ask nanobot to tune your existing Redis instance and include the "
+                    "host/port/config file path in your message.\n"
                 )
                 logger.warning(msg)
                 raise RuntimeError(msg) from e
@@ -263,7 +261,7 @@ def _format_dry_run_report(state: Any) -> str:
     return "\n".join(lines)
 
 
-def _format_final_report(state: Any, session: TuningSession) -> str:
+def _format_final_report(state: Any, _session: TuningSession) -> str:
     """Format the final tuning report."""
     lines = [
         "## Tuning Report",

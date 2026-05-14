@@ -141,19 +141,6 @@ class AgentDefaults(Base):
         serialization_alias="consolidationRatio",
     )  # Consolidation target ratio (0.5 = 50% of budget retained after compression)
     dream: DreamConfig = Field(default_factory=DreamConfig)
-    extensions: dict[str, Any] = Field(default_factory=dict)
-
-    @model_validator(mode="before")
-    @classmethod
-    def _migrate_tuning_config(cls, data: Any) -> Any:
-        """Migrate legacy ``tuning`` key to ``extensions.tuning``."""
-        if isinstance(data, dict) and "tuning" in data:
-            tuning_val = data.pop("tuning")
-            if isinstance(tuning_val, dict):
-                data.setdefault("extensions", {})
-                if "tuning" not in data["extensions"]:
-                    data["extensions"]["tuning"] = tuning_val
-        return data
 
 
 class AgentsConfig(Base):
