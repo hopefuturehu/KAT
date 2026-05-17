@@ -57,8 +57,6 @@ class TuningIntentRouter:
             schedule_background=schedule_background,
             memory_store=memory_store,
         )
-        self._graph: Any | None = None
-
     def set_provider(self, provider: "LLMProvider", model: str) -> None:
         self.manager.set_provider(provider, model)
 
@@ -142,28 +140,6 @@ class TuningIntentRouter:
         )
         return {**state, "response": response}
 
-    def _ensure_graph(self) -> Any | None:
-        if self._graph is not None:
-            return self._graph
-        try:
-            from langgraph.graph import END, START, StateGraph
-        except Exception:
-            logger.exception("Failed to initialize tuning route graph")
-            return None
-
-        graph = StateGraph(TuningRouteState)
-        graph.add_node("classify_request", self._classify_request)
-        graph.add_node("dispatch_request", self._dispatch_request)
-        graph.add_edge(START, "classify_request")
-        graph.add_conditional_edges(
-            "classify_request",
-            lambda state: "dispatch_request" if state.get("should_route") else END,
-            {"dispatch_request": "dispatch_request", END: END},
-        )
-        graph.add_edge("dispatch_request", END)
-        self._graph = graph.compile()
-        return self._graph
-
     async def route_message(
         self,
         *,
@@ -187,11 +163,7 @@ class TuningIntentRouter:
         if not state.get("should_route"):
             return state.get("response")
 
-        graph = self._ensure_graph()
-        if graph is None:
-            result = await self._dispatch_request(state)
-        else:
-            result = await graph.ainvoke(state)
+        result = await self._dispatch_request(state)
         logger.info(
             "Routed session {} into tuning flow via {}",
             session_key,

@@ -53,6 +53,12 @@ async def make_decision(state: ExperimentState) -> ExperimentState:
         }
         return state
 
+    rule_based = _rule_based_decision(state, last_trial_summary)
+    if rule_based is not None:
+        state.orchestrator_decision = rule_based
+        logger.info("decision made", action=rule_based.get("action"), mode="rules")
+        return state
+
     # Invoke LLM Orchestrator
     try:
         decision = await orchestrator.decide_next_action({
@@ -67,6 +73,7 @@ async def make_decision(state: ExperimentState) -> ExperimentState:
             "best_metrics": state.best_metrics,
             "last_trial_summary": last_trial_summary,
             "convergence_window": state.convergence_window,
+            "recent_improvements": state.improvement_history[-5:],
         })
         state.consecutive_orchestrator_failures = 0
     except Exception as exc:
@@ -100,3 +107,54 @@ async def make_decision(state: ExperimentState) -> ExperimentState:
 
     logger.info("decision made", action=decision.get("action"))
     return state
+
+
+def _rule_based_decision(
+    state: ExperimentState,
+    last_trial_summary: str,
+) -> dict | None:
+    if not state.trial_history:
+        return {
+            "action": "CONTINUE_TUNING",
+            "reasoning": "No completed trials yet; continue collecting signal.",
+        }
+
+    last_trial = state.trial_history[-1]
+    recent_improvements = state.improvement_history[-min(3, len(state.improvement_history)) :]
+    last_improvement = last_trial.improvement_pct
+
+    if state.has_converged():
+        return {
+            "action": "CONVERGED",
+            "reasoning": (
+                f"Recent improvement stayed below {state.improvement_threshold_pct:.1f}% "
+                f"for {state.convergence_window} trials."
+            ),
+        }
+
+    if last_trial.status != "completed":
+        return {
+            "action": "CONTINUE_TUNING",
+            "reasoning": f"Latest trial status is {last_trial.status}; continue with caution.",
+        }
+
+    if last_improvement >= state.improvement_threshold_pct:
+        return {
+            "action": "CONTINUE_TUNING",
+            "reasoning": (
+                f"Latest trial improved by {last_improvement:.1f}%, exceeding the "
+                f"{state.improvement_threshold_pct:.1f}% threshold."
+            ),
+            "next_focus": "Keep iterating near the current best configuration.",
+        }
+
+    if len(recent_improvements) >= 2 and all(imp <= 0 for imp in recent_improvements):
+        return {
+            "action": "CONVERGED",
+            "reasoning": (
+                "Recent trials did not improve the best result. "
+                f"Latest summary: {last_trial_summary}"
+            ),
+        }
+
+    return None

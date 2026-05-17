@@ -1,8 +1,9 @@
 """Orchestrator Agent — central workflow controller."""
 
-import json
 from pathlib import Path
+
 from src.agents.base import BaseAgent
+from src.agents.prompt_payload import build_json_message, limit_mapping
 from src.utils.llm_resilience import safe_extract_json
 from src.utils.logging import get_logger
 
@@ -22,22 +23,28 @@ class OrchestratorAgent(BaseAgent):
 
     async def decide_next_action(self, state: dict) -> dict:
         """Given experiment state, decide the next action."""
-        context = {
-            "target_system": state.get("target_system", "unknown"),
-            "target_version": state.get("target_version", ""),
+        payload = {
+            "target": {
+                "system": state.get("target_system", "unknown"),
+                "version": state.get("target_version", ""),
+            },
             "experiment_name": state.get("experiment_name", "unnamed"),
             "trial_number": state.get("trial_number", 0),
             "max_trials": state.get("max_trials", 30),
             "elapsed_hours": state.get("elapsed_hours", 0),
             "max_duration_hours": state.get("max_duration_hours", 8.0),
-            "goals_text": json.dumps(state.get("goals", []), indent=2),
-            "best_metrics_text": json.dumps(state.get("best_metrics", {}), indent=2),
+            "goals": state.get("goals", []),
+            "best_metrics": limit_mapping(state.get("best_metrics", {}), 8),
             "last_trial_summary": state.get("last_trial_summary", "No previous trial"),
             "convergence_window": state.get("convergence_window", 5),
+            "recent_improvements": state.get("recent_improvements", []),
         }
 
-        user_message = "Analyze the current experiment state and decide the next workflow action."
-        response = await self.invoke(user_message, context)
+        user_message = build_json_message(
+            "Analyze the current experiment state and decide the next workflow action.",
+            payload,
+        )
+        response = await self.invoke(user_message, context={})
 
         return safe_extract_json(
             response,

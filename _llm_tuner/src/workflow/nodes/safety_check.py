@@ -78,6 +78,38 @@ async def safety_gate(state: ExperimentState) -> ExperimentState:
         logger.info("safety verdict", verdict=verdict.get("verdict"), risk="high")
         return state
 
+    relevant_metadata = _select_relevant_parameter_metadata(proposed_changes, metadata_by_name)
+    relevant_config = {
+        key: state.current_config[key]
+        for key in sorted(
+            {
+                name
+                for item in relevant_metadata
+                for name in [item["name"], *item.get("depends_on", []), *item.get("conflicts_with", [])]
+            }
+        )
+        if key in state.current_config
+    }
+    rollback_summary = [
+        {
+            "trial": item.get("trial"),
+            "reason": item.get("reason", ""),
+        }
+        for item in state.rollback_history[-3:]
+    ]
+
+    if _can_short_circuit_approval(proposed_changes, relevant_metadata):
+        verdict = {
+            "verdict": "APPROVE",
+            "overall_risk_level": "low",
+            "warnings": [],
+            "requires_human_approval": False,
+            "notes": "Approved by static low-risk guardrails",
+        }
+        state.safety_verdict = verdict
+        logger.info("safety verdict", verdict="APPROVE", risk="low", mode="static")
+        return state
+
     try:
         verdict = await safety.validate(
             state={
@@ -91,9 +123,9 @@ async def safety_gate(state: ExperimentState) -> ExperimentState:
                 "max_consecutive_rollbacks": state.max_consecutive_rollbacks,
             },
             proposed_changes=proposed_changes,
-            current_config=state.current_config,
-            parameter_metadata=param_metadata,
-            rollback_history=state.rollback_history,
+            current_config=relevant_config,
+            parameter_metadata=relevant_metadata,
+            rollback_history=rollback_summary,
         )
     except Exception as exc:
         logger.error("safety agent call failed — rejecting trial", error=str(exc))
@@ -118,6 +150,76 @@ async def safety_gate(state: ExperimentState) -> ExperimentState:
         )
 
     return state
+
+
+def _select_relevant_parameter_metadata(
+    proposed_changes: list[dict],
+    metadata_by_name: dict[str, dict],
+) -> list[dict]:
+    relevant_names = {
+        str(change.get("parameter", ""))
+        for change in proposed_changes
+    }
+    expanded = set(relevant_names)
+    for name in list(relevant_names):
+        metadata = metadata_by_name.get(name)
+        if metadata is None:
+            continue
+        expanded.update(str(item) for item in metadata.get("depends_on", []))
+        expanded.update(str(item) for item in metadata.get("conflicts_with", []))
+
+    return [
+        metadata_by_name[name]
+        for name in sorted(expanded)
+        if name in metadata_by_name
+    ]
+
+
+def _can_short_circuit_approval(
+    proposed_changes: list[dict],
+    relevant_metadata: list[dict],
+) -> bool:
+    metadata_by_name = {item["name"]: item for item in relevant_metadata}
+    if not proposed_changes:
+        return True
+
+    for change in proposed_changes:
+        name = str(change.get("parameter", ""))
+        metadata = metadata_by_name.get(name)
+        if metadata is None:
+            return False
+        if metadata.get("restart_required"):
+            return False
+        if metadata.get("depends_on") or metadata.get("conflicts_with"):
+            return False
+        if str(metadata.get("risk", "medium")).lower() != "low":
+            return False
+        if not _value_fits_metadata(change.get("proposed_value"), metadata):
+            return False
+    return True
+
+
+def _value_fits_metadata(value: object, metadata: dict) -> bool:
+    param_type = str(metadata.get("type", "string")).lower()
+    enum_values = metadata.get("enum_values") or []
+    if enum_values and str(value) not in {str(item) for item in enum_values}:
+        return False
+
+    if param_type in {"integer", "float"}:
+        try:
+            numeric_value = float(str(value))
+        except (TypeError, ValueError):
+            return False
+        min_value = metadata.get("min")
+        max_value = metadata.get("max")
+        if min_value not in (None, "") and numeric_value < float(str(min_value)):
+            return False
+        if max_value not in (None, "") and numeric_value > float(str(max_value)):
+            return False
+    elif param_type == "boolean" and str(value).lower() not in {"true", "false", "0", "1", "yes", "no"}:
+        return False
+
+    return True
 
 
 def _risk_rank(risk_level: str) -> int:

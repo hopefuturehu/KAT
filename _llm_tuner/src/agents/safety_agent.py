@@ -1,8 +1,9 @@
 """Safety Agent — validates parameter changes before they are applied."""
 
-import json
 from pathlib import Path
+
 from src.agents.base import BaseAgent
+from src.agents.prompt_payload import build_json_message, limit_list
 from src.utils.llm_resilience import safe_extract_json
 from src.utils.logging import get_logger
 
@@ -30,19 +31,6 @@ class SafetyAgent(BaseAgent):
     ) -> dict:
         """Validate proposed parameter changes for safety."""
 
-        context = {
-            "target_system": state.get("target_system", "unknown"),
-            "target_version": state.get("target_version", ""),
-            "proposed_changes": json.dumps(proposed_changes, indent=2),
-            "current_config": json.dumps(current_config, indent=2),
-            "memory_headroom_pct": state.get("memory_headroom_pct", 20),
-            "max_restart_changes": state.get("max_restart_changes", 2),
-            "stability_window": state.get("stability_window", 3),
-            "max_consecutive_rollbacks": state.get("max_consecutive_rollbacks", 3),
-            "parameter_metadata": json.dumps(parameter_metadata, indent=2),
-            "rollback_history": json.dumps(rollback_history, indent=2),
-        }
-
         # Count restart-requiring changes
         restart_count = sum(
             1 for c in proposed_changes
@@ -50,12 +38,30 @@ class SafetyAgent(BaseAgent):
                    for m in parameter_metadata)
         )
 
-        user_message = (
+        payload = {
+            "target": {
+                "system": state.get("target_system", "unknown"),
+                "version": state.get("target_version", ""),
+            },
+            "safety_constraints": {
+                "memory_headroom_pct": state.get("memory_headroom_pct", 20),
+                "max_restart_changes": state.get("max_restart_changes", 2),
+                "stability_window": state.get("stability_window", 3),
+                "max_consecutive_rollbacks": state.get("max_consecutive_rollbacks", 3),
+            },
+            "restart_count": restart_count,
+            "proposed_changes": proposed_changes,
+            "relevant_live_config": current_config,
+            "relevant_parameter_metadata": parameter_metadata,
+            "recent_rollbacks": limit_list(rollback_history, 3),
+        }
+
+        user_message = build_json_message(
             f"Review these {len(proposed_changes)} proposed changes "
-            f"({restart_count} require restart). "
-            f"Determine if they are safe to apply."
+            f"({restart_count} require restart) and determine whether they are safe to apply.",
+            payload,
         )
-        response = await self.invoke(user_message, context)
+        response = await self.invoke(user_message, context={})
 
         # Fail-safe: reject if we can't parse
         return safe_extract_json(

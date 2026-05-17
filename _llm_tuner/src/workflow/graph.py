@@ -149,14 +149,17 @@ def route_after_decide(state: ExperimentState) -> Literal["plan", "finalize", "r
 
 
 def create_workflow():
-    """Create a compiled workflow with SQLite checkpointing."""
+    """Create a compiled workflow.
+
+    Uses in-memory checkpointing (LangGraph 1.x SqliteSaver is a separate
+    package).  Crash recovery is handled by the caller via explicit state
+    snapshots saved at trial boundaries.
+    """
     graph = build_optimization_graph()
     try:
-        from langgraph.checkpoint.sqlite import SqliteSaver
-        import sqlite3
-        conn = sqlite3.connect("data/workflow_checkpoints.db", check_same_thread=False)
-        checkpointer = SqliteSaver(conn)
+        from langgraph.checkpoint.memory import MemorySaver
+        checkpointer = MemorySaver()
         return graph.compile(checkpointer=checkpointer)
     except ImportError:
-        logger.warning("SqliteSaver not available — running without checkpointing")
+        logger.warning("MemorySaver not available — running without checkpointing")
         return graph.compile()

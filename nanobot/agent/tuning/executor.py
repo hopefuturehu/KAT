@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import contextmanager
+import json
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -21,6 +22,50 @@ if TYPE_CHECKING:
     from nanobot.providers.base import LLMProvider
 
 _TUNER_EXECUTION_LOCK = asyncio.Lock()
+
+_CHECKPOINT_SUBDIR = ".agent/tuning/sessions"
+
+
+def _get_checkpoint_path(workspace: str, task_id: str) -> Path:
+    return Path(workspace) / _CHECKPOINT_SUBDIR / task_id / "checkpoint.json"
+
+
+def _save_checkpoint(state: Any, workspace: str, task_id: str) -> None:
+    """Serialize *state* (an ExperimentState) to a JSON checkpoint file."""
+    path = _get_checkpoint_path(workspace, task_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = state.model_dump(mode="json")
+    # Write atomically
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
+    logger.info("checkpoint saved", task_id=task_id, trials=state.trial_number)
+
+
+def _load_checkpoint(workspace: str, task_id: str) -> Any | None:
+    """Load a previously saved ExperimentState checkpoint, or None."""
+    path = _get_checkpoint_path(workspace, task_id)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        from src.workflow.state import ExperimentState
+        return ExperimentState.model_validate(payload)
+    except Exception:
+        logger.exception("failed to load checkpoint", task_id=task_id)
+        return None
+
+
+def _cleanup_checkpoint(workspace: str, task_id: str) -> None:
+    path = _get_checkpoint_path(workspace, task_id)
+    if path.exists():
+        path.unlink(missing_ok=True)
+        # Remove parent dir if empty
+        try:
+            path.parent.rmdir()
+        except OSError:
+            pass
+        logger.info("checkpoint cleaned up", task_id=task_id)
 
 
 @contextmanager
@@ -107,23 +152,36 @@ async def _execute_tuning_workflow(
     req: TuningRequirements,
     provider: "LLMProvider | None",
     model: str | None,
+    workspace: str,
     report_progress: "Callable[[str], Awaitable[None]] | None" = None,
 ) -> tuple[str, dict[str, Any]]:
     async with _TUNER_EXECUTION_LOCK:
         with _configure_tuner_llm(provider, model):
-            state = await _build_experiment_state(req)
-
-            # Load baseline config from target
-            if req.host and req.config_file:
-                await _setup_direct_mode(state, req)
-            else:
-                msg = (
-                    "Direct-connect mode requires host, port, and config file path. "
-                    "A benchmark profile can replace inline benchmark commands, but it does not "
-                    "replace the connection details needed to read and write the target config."
+            # ── Resume from checkpoint if available ──────────────────────
+            state = _load_checkpoint(workspace, session.task_id)
+            if state is not None:
+                logger.info(
+                    "resuming from checkpoint",
+                    task_id=session.task_id,
+                    trials=state.trial_number,
                 )
-                logger.error(msg)
-                return f"## Tuning Failed\n\n{msg}", {}
+                if report_progress:
+                    await report_progress(
+                        f"Resuming from checkpoint (trial {state.trial_number}/{state.max_trials})"
+                    )
+            else:
+                state = await _build_experiment_state(req)
+                # Load baseline config from target
+                if req.host and req.config_file:
+                    await _setup_direct_mode(state, req)
+                else:
+                    msg = (
+                        "Direct-connect mode requires host, port, and config file path. "
+                        "A benchmark profile can replace inline benchmark commands, but it does not "
+                        "replace the connection details needed to read and write the target config."
+                    )
+                    logger.error(msg)
+                    return f"## Tuning Failed\n\n{msg}", {}
 
             if req.dry_run:
                 return _format_dry_run_report(state), {}
@@ -132,12 +190,15 @@ async def _execute_tuning_workflow(
 
             workflow = create_workflow()
             logger.info("starting tuning workflow: {} trials", state.max_trials)
-            if report_progress:
+            if report_progress and state.trial_number == 0:
                 await report_progress(_format_start_progress(state))
 
             final_event = None
-            last_reported_trial = -1
+            last_reported_trial = state.trial_number
+            last_saved_trial = state.trial_number
             async for event in workflow.astream(state, stream_mode="values"):
+                # Keep state in sync with the latest event so checkpointing is accurate
+                state = _reconstruct_state(state, event)
                 node_name = event.get("phase", "unknown")
                 trial_num = event.get("trial_number", 0)
                 msg = f"[Trial {trial_num}] Phase: {node_name}"
@@ -145,15 +206,20 @@ async def _execute_tuning_workflow(
                 session.progress_messages.append(msg)
                 final_event = event
 
-                # Publish progress at trial boundaries when meaningful data is available
+                # Publish progress at trial boundaries
                 if report_progress and trial_num > last_reported_trial:
                     progress_message = _format_trial_progress(event, state.max_trials)
                     if progress_message:
                         last_reported_trial = trial_num
                         await report_progress(progress_message)
 
-            if final_event:
-                state = _reconstruct_state(state, final_event)
+                # Save checkpoint at trial boundaries
+                if trial_num > last_saved_trial:
+                    _save_checkpoint(state, workspace, session.task_id)
+                    last_saved_trial = trial_num
+
+            # Clean up checkpoint on success
+            _cleanup_checkpoint(workspace, session.task_id)
 
             report = _format_final_report(state, session)
             structured = _extract_structured_results(state)
@@ -221,36 +287,41 @@ async def run_execution(
             f"Or re-run with:  pip install {' '.join(missing)}"
         )
         logger.error(msg)
-        return f"## Tuning Failed\n\n{msg}", {}
+        raise RuntimeError(msg)
+
+    execution_issue = _validate_execution_requirements(req)
+    if execution_issue:
+        logger.error(execution_issue)
+        raise RuntimeError(execution_issue)
 
     try:
-        execution_issue = _validate_execution_requirements(req)
-        if execution_issue:
-            logger.error(execution_issue)
-            return f"## Tuning Failed\n\n{execution_issue}", {}
-
         return await _execute_tuning_workflow(
-            session, req, provider, model, report_progress=report_progress,
+            session, req, provider, model, _workspace,
+            report_progress=report_progress,
         )
-
     except Exception as e:
         logger.exception("Tuning execution failed")
         session.progress_messages.append(f"Error: {e}")
-        return f"## Tuning Failed\n\nError: {e}\n\nProgress:\n" + "\n".join(
-            session.progress_messages
-        ), {}
+        raise
 
 
 def _validate_execution_requirements(req: TuningRequirements) -> str | None:
     """Ensure intake produced an executable tuning request."""
-    if not req.host or not req.config_file:
+    if not req.host or not req.port or not req.config_file:
         return (
             "Direct-connect mode requires host, port, and config file path. "
-            "Please provide the target instance connection details."
+            "Please provide all three connection details."
         )
-    if not req.run_command and not req.benchmark_profile_path:
+    if req.benchmark_profile_path:
+        profile_path = Path(req.benchmark_profile_path)
+        if not profile_path.exists():
+            return (
+                f"Benchmark profile not found: {req.benchmark_profile_path}. "
+                f"Please verify the file path or provide a run_command instead."
+            )
+    elif not req.run_command:
         return (
-            "A tuning run needs either a benchmark profile path or a run command. "
+            "A tuning run needs either an existing benchmark profile YAML or a run command. "
             "Please provide one of them before execution."
         )
     return None

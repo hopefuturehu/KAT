@@ -171,6 +171,7 @@ class TuningSession:
     reuse_candidates: list[dict[str, Any]] = field(default_factory=list)
     awaiting_profile_selection: bool = False
     intake_turn_count: int = 0
+    checkpoint_thread_id: str = ""
 
     _intake_conversation: list[dict[str, Any]] = field(default_factory=list)
 
