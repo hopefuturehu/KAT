@@ -113,10 +113,44 @@ class TuningIntentRouter:
             route_reason = "continue_intake"
             task = session.task_description
             user_response = message
-        elif session is not None and session.phase == TuningPhase.ERROR and self._looks_like_retry_request(message):
-            should_route = True
-            route_reason = "retry_after_error"
-            task = session.task_description
+        elif session is not None and session.phase == TuningPhase.ERROR:
+            if self._looks_like_retry_request(message):
+                should_route = True
+                route_reason = "retry_after_error"
+                task = session.task_description
+            elif self._looks_like_tuning_request(message):
+                # User is trying to start a new tuning but a failed one exists.
+                # Prompt them to retry instead of silently starting a new session.
+                return {
+                    **state,
+                    "should_route": False,
+                    "route_reason": "tuning_error_exists",
+                    "response": (
+                        "A previous tuning session failed with the error below. "
+                        "Reply `retry` to re-run with the same requirements, or "
+                        "`cancel tuning` to discard it and start fresh.\n\n"
+                        f"**Previous task**: {session.task_description}\n"
+                        f"**Error**: {session.error or 'unknown'}"
+                    ),
+                }
+            # Not a tuning/retry request — don't route, let main agent handle it.
+        elif session is not None and session.phase in (TuningPhase.EXECUTION, TuningPhase.DONE):
+            # A tuning session is already active (or just finished) for this
+            # conversation.  Don't allow a second tuning process — return a
+            # status message if the user appears to be asking for tuning,
+            # otherwise stay silent and let the main agent handle the message.
+            if self._looks_like_tuning_request(message):
+                return {
+                    **state,
+                    "should_route": False,
+                    "route_reason": "tuning_already_active",
+                    "response": (
+                        "A tuning session is already in progress for this conversation.\n\n"
+                        + (session.execution_summary() if session.requirements else "")
+                        + "\nWait for it to complete, or reply `cancel tuning` to stop it."
+                    ),
+                }
+            # Not a tuning request — don't route, let main agent handle it.
         elif self._looks_like_tuning_request(message):
             should_route = True
             target_system = self._detect_target_system(message) or "unknown"

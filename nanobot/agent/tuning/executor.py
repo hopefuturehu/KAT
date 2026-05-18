@@ -105,6 +105,13 @@ def _configure_tuner_llm(
 
     configure_logging()
 
+    # Silence the OpenAI SDK's HTTP request logging — otherwise every
+    # LLM call prints an "HTTP Request: POST ..." line to stderr, which
+    # floods the terminal and drowns out the actual tuning progress.
+    import logging as _logging
+    _logging.getLogger("openai").setLevel(_logging.WARNING)
+    _logging.getLogger("httpx").setLevel(_logging.WARNING)
+
     logger.info(
         "configured _llm_tuner LLM: provider={} model={} base={}",
         tuner_settings.llm_provider,
@@ -271,6 +278,17 @@ async def _setup_direct_mode(state: Any, req: TuningRequirements) -> None:
             req.config_file,
             len(state.current_config),
         )
+
+    # If the target isn't reachable, try to start it before the first trial.
+    # The intake agent often leaves start_command empty; fall back to
+    # restart_command which is usually populated.
+    if not await runner.health_check(timeout=5):
+        cmd = state.start_command or state.restart_command
+        if cmd:
+            logger.info("target not reachable, attempting start", command=cmd[:120])
+            started = await runner.start() if state.start_command else await runner.restart()
+            if not started:
+                logger.error("failed to start target — benchmarks will fail")
 async def run_execution(
     session: TuningSession,
     _workspace: str,
