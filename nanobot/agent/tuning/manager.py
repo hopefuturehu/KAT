@@ -361,8 +361,8 @@ class TuningSessionManager:
         session_key: str,
         origin_channel: str,
         origin_chat_id: str,
-    ) -> None:
-        """Run the execution phase, archive results, and announce via message bus."""
+    ) -> str:
+        """Run the execution phase, archive results, announce via message bus, and return the report."""
         from nanobot.agent.tuning.executor import run_execution
         from nanobot.utils.prompt_templates import render_template
 
@@ -433,6 +433,8 @@ class TuningSessionManager:
         # Cleanup session on success only — keep on error so retry reuses intake
         if session.phase == TuningPhase.DONE:
             self._cleanup_session(session_key)
+
+        return announce
 
     def _cleanup_session(self, session_key: str) -> None:
         self._sessions.pop(session_key, None)
