@@ -108,7 +108,7 @@ class TuningSessionManager:
             if session.phase == TuningPhase.INTAKE and session.intake_turn_count == 0:
                 session.background = (origin_channel != "cli")
 
-            conversation, early_response = self._prepare_conversation_for_intake(
+            conversation, early_response = await self._prepare_conversation_for_intake(
                 session,
                 user_response,
                 session_key=session_key,
@@ -173,7 +173,7 @@ class TuningSessionManager:
         session.awaiting_profile_selection = True
         return session, _format_profile_selection_prompt(target_system, candidates)
 
-    def _prepare_conversation_for_intake(
+    async def _prepare_conversation_for_intake(
         self,
         session: TuningSession,
         user_response: str,
@@ -183,7 +183,7 @@ class TuningSessionManager:
         origin_chat_id: str,
     ) -> tuple[list[dict[str, Any]], str | None]:
         if session.awaiting_profile_selection:
-            return self._handle_profile_selection(
+            return await self._handle_profile_selection(
                 session,
                 user_response,
                 session_key=session_key,
@@ -196,7 +196,7 @@ class TuningSessionManager:
             conversation.append({"role": "user", "content": user_response})
         return conversation, None
 
-    def _handle_profile_selection(
+    async def _handle_profile_selection(
         self,
         session: TuningSession,
         user_response: str,
@@ -221,7 +221,7 @@ class TuningSessionManager:
                 invalid_response=True,
             )
 
-        response = self._apply_selected_profile(
+        response = await self._apply_selected_profile(
             session,
             action,
             session_key=session_key,
@@ -230,7 +230,7 @@ class TuningSessionManager:
         )
         return [], response
 
-    def _apply_selected_profile(
+    async def _apply_selected_profile(
         self,
         session: TuningSession,
         candidate: dict[str, Any],
@@ -256,8 +256,13 @@ class TuningSessionManager:
 
         session.requirements = requirements
         session.phase = TuningPhase.EXECUTION
-        self._start_execution_task(session, session_key, origin_channel, origin_chat_id)
-        return _format_saved_profile_execution(candidate, requirements)
+        if session.background:
+            self._start_execution_task(session, session_key, origin_channel, origin_chat_id)
+            return _format_saved_profile_execution(candidate, requirements)
+        # Inline mode — run synchronously and return the report.
+        return await self._run_execution_and_report(
+            session, session_key, origin_channel, origin_chat_id
+        )
 
     async def _advance_intake(
         self,
