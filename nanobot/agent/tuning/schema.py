@@ -162,6 +162,7 @@ class TuningSession:
     progress_messages: list[str] = field(default_factory=list)
     final_report: str = ""
     error: str = ""
+    background: bool = True  # True = spawn background task, False = run inline
 
     # Structured tuning results (populated after execution)
     best_config: dict[str, str] = field(default_factory=dict)

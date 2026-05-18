@@ -104,6 +104,9 @@ class TuningSessionManager:
             session, profile_prompt = self._ensure_session(session_key, task)
             if profile_prompt is not None:
                 return profile_prompt
+            # New sessions default to background=True; CLI sessions run inline.
+            if session.phase == TuningPhase.INTAKE and session.intake_turn_count == 0:
+                session.background = (origin_channel != "cli")
 
             conversation, early_response = self._prepare_conversation_for_intake(
                 session,
@@ -277,7 +280,7 @@ class TuningSessionManager:
         session._intake_conversation = updated_conversation
 
         if requirements is not None:
-            return self._complete_requirements(
+            return await self._complete_requirements(
                 session,
                 requirements,
                 session_key=session_key,
@@ -301,7 +304,7 @@ class TuningSessionManager:
             return "I encountered an issue processing your tuning request. Could you rephrase?"
         return response
 
-    def _complete_requirements(
+    async def _complete_requirements(
         self,
         session: TuningSession,
         requirements: TuningRequirements,
@@ -316,8 +319,13 @@ class TuningSessionManager:
             requirements,
             task_description=session.task_description,
         )
-        self._start_execution_task(session, session_key, origin_channel, origin_chat_id)
-        return _format_requirements_collected(requirements, saved_profile)
+        if session.background:
+            self._start_execution_task(session, session_key, origin_channel, origin_chat_id)
+            return _format_requirements_collected(requirements, saved_profile)
+        # Inline mode: run execution synchronously and return the report directly.
+        return await self._run_execution_and_report(
+            session, session_key, origin_channel, origin_chat_id
+        )
 
     def _is_execution_running(self, session_key: str) -> bool:
         task = self._execution_tasks.get(session_key)

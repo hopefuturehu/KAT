@@ -224,15 +224,30 @@ async def _execute_tuning_workflow(
                     progress_message = _format_trial_progress(event, state.max_trials)
                     if progress_message:
                         last_reported_trial = trial_num
-                        await report_progress(progress_message)
+                        try:
+                            await report_progress(progress_message)
+                        except Exception:
+                            # Bus-based progress failed — fall back to stderr so
+                            # the user still sees progress in the terminal.
+                            logger.warning(
+                                "report_progress failed, falling back to log: {}",
+                                progress_message,
+                            )
 
                 # Save checkpoint at trial boundaries
                 if trial_num > last_saved_trial:
                     _save_checkpoint(state, workspace, session.task_id)
                     last_saved_trial = trial_num
 
-            # Clean up checkpoint on success
-            _cleanup_checkpoint(workspace, session.task_id)
+            # Persist final state alongside any remaining checkpoint
+            _save_checkpoint(state, workspace, session.task_id)
+            checkpoint = _get_checkpoint_path(workspace, session.task_id)
+            result = checkpoint.with_name("result.json")
+            try:
+                checkpoint.replace(result)
+                logger.info("final result saved", path=str(result))
+            except OSError:
+                logger.warning("could not rename checkpoint to result.json")
 
             report = _format_final_report(state, session)
             structured = _extract_structured_results(state)

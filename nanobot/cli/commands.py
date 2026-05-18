@@ -1172,6 +1172,8 @@ def agent(
                         continue
                     except asyncio.CancelledError:
                         break
+                    except Exception:
+                        logger.exception("outbound consumer error — recovering")
 
             outbound_task = asyncio.create_task(_consume_outbound())
 
