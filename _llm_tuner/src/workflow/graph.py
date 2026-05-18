@@ -123,16 +123,31 @@ def build_optimization_graph() -> StateGraph:
 
 def route_after_plan(state: ExperimentState) -> Literal["safety_check", "decide"]:
     proposal = state.tuning_proposal
-    if proposal and proposal.get("changes"):
-        return "safety_check"
-    return "decide"
+    changes = proposal.get("changes") if proposal else []
+    next_node: Literal["safety_check", "decide"] = "safety_check" if changes else "decide"
+    logger.debug(
+        "route_after_plan",
+        next=next_node,
+        changes=0 if changes is None else len(changes),
+        source=proposal.get("source", "") if proposal else "",
+    )
+    return next_node
 
 
 def route_after_safety(state: ExperimentState) -> Literal["apply_config", "plan"]:
     verdict = state.safety_verdict
-    if verdict.get("verdict") in ("APPROVE", "APPROVE_WITH_MODIFICATIONS"):
-        return "apply_config"
-    return "plan"
+    v = verdict.get("verdict", "")
+    next_node: Literal["apply_config", "plan"] = (
+        "apply_config" if v in ("APPROVE", "APPROVE_WITH_MODIFICATIONS") else "plan"
+    )
+    logger.debug(
+        "route_after_safety",
+        next=next_node,
+        verdict=v,
+        risk=verdict.get("overall_risk_level", ""),
+        warnings=len(verdict.get("warnings", []) or []),
+    )
+    return next_node
 
 
 def route_after_decide(state: ExperimentState) -> Literal["plan", "finalize", "rollback"]:
@@ -140,12 +155,21 @@ def route_after_decide(state: ExperimentState) -> Literal["plan", "finalize", "r
     action = decision.get("action", "CONTINUE_TUNING")
 
     if action == "ROLLBACK":
-        return "rollback"
+        next_node: Literal["plan", "finalize", "rollback"] = "rollback"
+    elif action in ("CONVERGED", "MAX_TRIALS_REACHED", "MAX_DURATION_REACHED", "GOALS_MET"):
+        next_node = "finalize"
+    else:
+        next_node = "plan"
 
-    if action in ("CONVERGED", "MAX_TRIALS_REACHED", "MAX_DURATION_REACHED", "GOALS_MET"):
-        return "finalize"
-
-    return "plan"
+    logger.debug(
+        "route_after_decide",
+        next=next_node,
+        action=action,
+        trial=state.trial_number,
+        consecutive_rollbacks=state.consecutive_rollbacks,
+        elapsed_hours=getattr(state, "elapsed_hours", 0.0),
+    )
+    return next_node
 
 
 def create_workflow():
