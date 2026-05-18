@@ -99,6 +99,12 @@ def _configure_tuner_llm(
     if model:
         tuner_settings.llm_model = model
     tuner_settings.llm_provider = "deepseek"
+    # Initialize _llm_tuner's structlog so internal agent/workflow logs
+    # are visible. Without this, only executor-level loguru logs appear.
+    from src.utils.logging import configure_logging
+
+    configure_logging()
+
     logger.info(
         "configured _llm_tuner LLM: provider={} model={} base={}",
         tuner_settings.llm_provider,
