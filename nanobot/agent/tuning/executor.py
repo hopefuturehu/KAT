@@ -209,7 +209,11 @@ async def _execute_tuning_workflow(
             final_event = None
             last_reported_trial = state.trial_number
             last_saved_trial = state.trial_number
-            async for event in workflow.astream(state, stream_mode="values"):
+            async for event in workflow.astream(
+                state,
+                stream_mode="values",
+                config={"configurable": {"thread_id": session.task_id}},
+            ):
                 # Keep state in sync with the latest event so checkpointing is accurate
                 state = _reconstruct_state(state, event)
                 node_name = event.get("phase", "unknown")

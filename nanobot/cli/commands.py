@@ -1290,20 +1290,12 @@ def tuning(
         console.print("[yellow]Dry run — no changes will be made.[/yellow]")
         return
 
-    # Build a minimal provider from nanobot config
+    # Build a provider from nanobot config
     from nanobot.providers.factory import make_provider
-    from nanobot.providers.base import LLMProvider
 
-    provider: LLMProvider | None = None
-    model: str | None = None
-    try:
-        provider_config = cfg.providers.current
-        provider = make_provider(provider_config)
-        model = provider_config.model or provider.get_default_model()
-        console.print(f"[dim]Provider: {provider_config.provider} | Model: {model}[/dim]")
-    except Exception as exc:
-        console.print(f"[yellow]Could not configure LLM provider: {exc}[/yellow]")
-        console.print("[yellow]Continuing with Bayesian-only optimization.[/yellow]")
+    provider = make_provider(cfg)
+    model = cfg.resolve_preset().model
+    console.print(f"[dim]Model: {model}[/dim]")
 
     session = TuningSession(
         task_id=str(uuid.uuid4())[:8],

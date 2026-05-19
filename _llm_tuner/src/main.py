@@ -290,7 +290,11 @@ async def _run_workflow(state) -> "ExperimentState":
 
     final_state = None
     try:
-        async for event in workflow.astream(state, stream_mode="values"):
+        async for event in workflow.astream(
+            state,
+            stream_mode="values",
+            config={"configurable": {"thread_id": state.experiment_id or "tuning"}},
+        ):
             node_name = event.get("phase", "unknown")
             logger.info("workflow step", phase=node_name)
             final_state = event
