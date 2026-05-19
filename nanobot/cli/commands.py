@@ -1240,6 +1240,99 @@ def agent(
 
 
 # ============================================================================
+# Tuning Command
+# ============================================================================
+
+
+@app.command()
+def tuning(
+    profile: str = typer.Argument(..., help="Path to a tuning profile YAML file"),
+    max_trials: int = typer.Option(0, "--max-trials", "-n", help="Override max trials (0 = use profile value)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Parse profile and print the plan without executing"),
+    config: str | None = typer.Option(None, "--config", "-c", help="Path to nanobot config file"),
+    workspace: str | None = typer.Option(None, "--workspace", "-w", help="Workspace directory"),
+) -> None:
+    """Run a tuning experiment directly from a saved profile, bypassing intake."""
+    import asyncio
+    import uuid
+    import yaml
+    from nanobot.config.loader import load_config, set_config_path
+    from nanobot.agent.tuning.schema import TuningRequirements, TuningSession
+
+    if config:
+        set_config_path(Path(config).expanduser().resolve())
+
+    cfg = load_config()
+    ws = Path(workspace).expanduser() if workspace else cfg.workspace_path
+
+    profile_path = Path(profile).expanduser().resolve()
+    if not profile_path.exists():
+        console.print(f"[red]Profile not found: {profile_path}[/red]")
+        raise typer.Exit(1)
+
+    raw = yaml.safe_load(profile_path.read_text())
+
+    # Support both the profile-store format (metadata + requirements) and
+    # a bare requirements dict.
+    req_data = raw.get("requirements", raw)
+    requirements = TuningRequirements.from_dict(req_data)
+    if max_trials > 0:
+        requirements.max_trials = max_trials
+    requirements.dry_run = dry_run
+
+    if dry_run:
+        console.print(f"[bold]Target:[/bold] {requirements.target_system} {requirements.target_version}")
+        console.print(f"[bold]Host:[/bold] {requirements.host}:{requirements.port}")
+        console.print(f"[bold]Config:[/bold] {requirements.config_file}")
+        console.print(f"[bold]Goals:[/bold] {requirements.goals_summary()}")
+        console.print(f"[bold]Run command:[/bold] {requirements.run_command}")
+        console.print(f"[bold]Max trials:[/bold] {requirements.max_trials}")
+        console.print("[yellow]Dry run — no changes will be made.[/yellow]")
+        return
+
+    # Build a minimal provider from nanobot config
+    from nanobot.providers.factory import make_provider
+    from nanobot.providers.base import LLMProvider
+
+    provider: LLMProvider | None = None
+    model: str | None = None
+    try:
+        provider_config = cfg.providers.current
+        provider = make_provider(provider_config)
+        model = provider_config.model or provider.get_default_model()
+        console.print(f"[dim]Provider: {provider_config.provider} | Model: {model}[/dim]")
+    except Exception as exc:
+        console.print(f"[yellow]Could not configure LLM provider: {exc}[/yellow]")
+        console.print("[yellow]Continuing with Bayesian-only optimization.[/yellow]")
+
+    session = TuningSession(
+        task_id=str(uuid.uuid4())[:8],
+        task_description=f"Tuning {requirements.target_system} from {profile_path.name}",
+    )
+    session.requirements = requirements
+
+    async def _progress(text: str) -> None:
+        console.print(f"  [dim]↳ {text}[/dim]")
+
+    async def _run() -> None:
+        from nanobot.agent.tuning.executor import run_execution
+
+        try:
+            report, structured = await run_execution(
+                session, str(ws),
+                provider=provider, model=model,
+                report_progress=_progress,
+            )
+            console.print()
+            console.print(report)
+        except RuntimeError as exc:
+            console.print(f"[red]Error: {exc}[/red]")
+            raise typer.Exit(1)
+
+    asyncio.run(_run())
+
+
+# ============================================================================
 # Channel Commands
 # ============================================================================
 
