@@ -298,16 +298,29 @@ class BaseAgent(ABC):
     ) -> str:
         """Invoke the LLM with full resilience: retry, backoff, rate‑limit, circuit‑breaker."""
         system_prompt = self.build_system_prompt(context or {})
+        ts = _invoke_counter()
+
+        if settings.log_prompts:
+            _write_prompt_log(
+                self.agent_name, ts, system_prompt, user_message, request_only=True,
+            )
 
         try:
             if self.provider in ("deepseek", "openai"):
-                return await self._invoke_openai(
+                result = await self._invoke_openai(
                     system_prompt, user_message, temperature or settings.llm_temperature
                 )
             else:
-                return await self._invoke_anthropic(
+                result = await self._invoke_anthropic(
                     system_prompt, user_message, temperature or settings.llm_temperature
                 )
+
+            if settings.log_prompts:
+                _write_prompt_log(
+                    self.agent_name, ts, system_prompt, user_message, response=result,
+                )
+            return result
+
         except CircuitBreakerOpenError:
             logger.error(
                 "circuit breaker open — LLM provider may be down",
@@ -334,6 +347,47 @@ class BaseAgent(ABC):
                 except Exception as e:
                     logger.error("tool call failed", tool=tool_name, error=str(e))
                     return {"error": str(e)}
+
+
+# ── Prompt logging helpers ─────────────────────────────────────────────────
+
+
+def _invoke_counter() -> str:
+    """Monotonic counter for unique prompt log filenames."""
+    import time
+    return f"{int(time.monotonic() * 1000):012d}"
+
+
+def _write_prompt_log(
+    agent: str,
+    ts: str,
+    system_prompt: str,
+    user_message: str,
+    *,
+    request_only: bool = False,
+    response: str = "",
+) -> None:
+    """Write an LLM prompt + response to disk for debugging.
+
+    Enabled via ``LLMTUNER_LOG_PROMPTS=true``.  Files land in
+    ``{data_dir}/prompts/{agent}_{ts}_{direction}.txt``.
+    """
+    from pathlib import Path
+    from src.config import settings
+
+    out = settings.data_dir / "prompts"
+    out.mkdir(parents=True, exist_ok=True)
+
+    if request_only:
+        path = out / f"{agent}_{ts}_request.txt"
+        path.write_text(
+            f"# SYSTEM PROMPT\n\n{system_prompt}\n\n"
+            f"# USER MESSAGE\n\n{user_message}",
+            encoding="utf-8",
+        )
+    else:
+        path = out / f"{agent}_{ts}_response.txt"
+        path.write_text(response, encoding="utf-8")
         return {"error": f"Unknown tool: {tool_name}"}
 
     def get_system_prompt(self) -> str:

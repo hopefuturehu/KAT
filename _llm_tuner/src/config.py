@@ -71,6 +71,10 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = Field(default="INFO")
     log_format: str = Field(default="console")  # json or console
+    log_prompts: bool = Field(
+        default=False,
+        description="Write every LLM prompt + response to data/prompts/ for debugging",
+    )
 
 
 settings = Settings()
