@@ -330,8 +330,11 @@ def test_tuner_agent_uses_static_system_prompt_and_compact_payload(
 ) -> None:
     captured: dict[str, object] = {}
 
-    async def fake_invoke(self, user_message, context=None, temperature=None):
-        captured["user_message"] = user_message
+    async def fake_invoke_with_cache(
+        self, stable_message, variable_message, context=None, temperature=None
+    ):
+        captured["stable_message"] = stable_message
+        captured["variable_message"] = variable_message
         captured["context"] = context
         return '{"changes":[],"overall_strategy":"noop"}'
 
@@ -346,7 +349,9 @@ def test_tuner_agent_uses_static_system_prompt_and_compact_payload(
             _ = (query, system, n_results)
             return [_Entry("doc-1", "x" * 600)]
 
-    monkeypatch.setattr("src.agents.base.BaseAgent.invoke", fake_invoke)
+    monkeypatch.setattr(
+        "src.agents.base.BaseAgent.invoke_with_cache", fake_invoke_with_cache
+    )
     agent = TunerAgent(kb_retriever=_KB())
 
     tunable_params = [
@@ -380,10 +385,27 @@ def test_tuner_agent_uses_static_system_prompt_and_compact_payload(
 
     assert result["overall_strategy"] == "noop"
     assert captured["context"] == {}
-    payload = json.loads(str(captured["user_message"]).split("INPUT_JSON:\n", 1)[1])
-    assert len(payload["candidate_parameters"]) <= 24
-    assert len(payload["knowledge_base_context"][0]["excerpt"]) < 230
-    assert "current_config_subset" in payload
+
+    stable_str = str(captured["stable_message"])
+    variable_str = str(captured["variable_message"])
+    assert "INPUT_JSON:" in stable_str
+    assert "INPUT_JSON:" in variable_str
+
+    stable_payload = json.loads(stable_str.split("INPUT_JSON:\n", 1)[1])
+    variable_payload = json.loads(variable_str.split("INPUT_JSON:\n", 1)[1])
+
+    # Stable keys should NOT be in variable payload
+    for key in ("target", "goals", "constraints", "candidate_parameters", "knowledge_base_context"):
+        assert key in stable_payload
+        assert key not in variable_payload
+
+    # Variable keys should NOT be in stable payload
+    for key in ("analysis", "current_config_subset", "recent_changes", "config_changes_from_baseline"):
+        assert key in variable_payload
+        assert key not in stable_payload
+
+    assert len(stable_payload["candidate_parameters"]) <= 24
+    assert len(stable_payload["knowledge_base_context"][0]["excerpt"]) < 230
     assert "{{" not in agent.build_system_prompt({})
 
 

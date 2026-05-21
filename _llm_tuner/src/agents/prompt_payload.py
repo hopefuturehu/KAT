@@ -35,3 +35,14 @@ def limit_mapping(mapping: Mapping[str, Any], max_items: int) -> dict[str, Any]:
 def build_json_message(instruction: str, payload: dict[str, Any]) -> str:
     """Combine a short instruction with a compact JSON payload."""
     return f"{instruction}\n\nINPUT_JSON:\n{compact_json(payload)}"
+
+
+def split_payload(payload: dict[str, Any], stable_keys: set[str]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Split *payload* into (stable, variable) dicts for prompt caching.
+
+    Items whose keys are in *stable_keys* go into the first dict (intended
+    as a cacheable prefix).  Everything else goes into the second dict.
+    """
+    stable = {k: payload[k] for k in stable_keys if k in payload}
+    variable = {k: v for k, v in payload.items() if k not in stable_keys}
+    return stable, variable

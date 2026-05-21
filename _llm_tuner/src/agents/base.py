@@ -264,6 +264,73 @@ class BaseAgent(ABC):
                         }],
                     })
 
+    async def _invoke_anthropic_with_cache(
+        self,
+        system_prompt: str,
+        stable_message: str,
+        variable_message: str,
+        temperature: float,
+    ) -> str:
+        """Anthropic invocation with explicit cache_control on the stable prefix.
+
+        Places *stable_message* in its own user turn with a cache_control
+        breakpoint so Anthropic caches it across calls.  *variable_message*
+        goes in a second user turn and is never cached.
+        """
+        client = await self._get_anthropic_client()
+        tools = self._format_tools_anthropic()
+        messages: list[dict] = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": stable_message,
+                        "cache_control": {"type": "ephemeral"},
+                    },
+                ],
+            },
+            {"role": "user", "content": variable_message},
+        ]
+
+        iteration = 0
+        max_iter = settings.llm_max_tool_iterations
+
+        while True:
+            iteration += 1
+
+            response = await self._execute_anthropic_call(
+                client=client,
+                system_prompt=system_prompt,
+                messages=messages,
+                tools=tools,
+                temperature=temperature,
+            )
+
+            if response.stop_reason != "tool_use":
+                text_blocks = [b.text for b in response.content if hasattr(b, "text")]
+                return "\n".join(text_blocks)
+
+            if iteration > max_iter:
+                raise ToolCallLoopExceededError(
+                    f"Tool call loop exceeded {max_iter} iterations — likely infinite loop"
+                )
+
+            # Follow-up turns are appended normally (assistant + tool_result).
+            messages.append({"role": "assistant", "content": response.content})
+
+            for block in response.content:
+                if block.type == "tool_use":
+                    result = await self._handle_tool_call(block.name, block.input)
+                    messages.append({
+                        "role": "user",
+                        "content": [{
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": str(result),
+                        }],
+                    })
+
     async def _execute_anthropic_call(self, *, client, system_prompt, messages, tools, temperature) -> Any:
         """Single Anthropic API call wrapped with per-provider rate limiting and circuit breaker."""
 
@@ -318,6 +385,72 @@ class BaseAgent(ABC):
             if settings.log_prompts:
                 _write_prompt_log(
                     self.agent_name, ts, system_prompt, user_message, response=result,
+                )
+            return result
+
+        except CircuitBreakerOpenError:
+            logger.error(
+                "circuit breaker open — LLM provider may be down",
+                provider=self.provider,
+            )
+            raise
+        except ToolCallLoopExceededError:
+            logger.error(
+                "tool call loop exceeded max iterations",
+                agent=self.agent_name,
+            )
+            raise
+
+    async def invoke_with_cache(
+        self,
+        stable_message: str,
+        variable_message: str,
+        context: dict | None = None,
+        temperature: float | None = None,
+    ) -> str:
+        """Invoke the LLM with a cacheable stable prefix and variable suffix.
+
+        On Anthropic the *stable_message* is placed in its own user turn with
+        a ``cache_control`` breakpoint, so subsequent calls with the same
+        prefix enjoy a ~90% discount on those tokens.
+
+        On OpenAI / DeepSeek the two messages are concatenated with the
+        stable portion first, which works with those providers' automatic
+        prefix caching.
+        """
+        system_prompt = self.build_system_prompt(context or {})
+        ts = _invoke_counter()
+
+        if settings.log_prompts:
+            _write_prompt_log(
+                self.agent_name,
+                ts,
+                system_prompt,
+                f"{stable_message}\n\n---VARIABLE---\n\n{variable_message}",
+                request_only=True,
+            )
+
+        try:
+            if self.provider in ("deepseek", "openai"):
+                combined = f"{stable_message}\n\n---\n\n{variable_message}"
+                result = await self._invoke_openai(
+                    system_prompt, combined, temperature or settings.llm_temperature
+                )
+            else:
+                result = await self._invoke_anthropic_with_cache(
+                    system_prompt,
+                    stable_message,
+                    variable_message,
+                    temperature or settings.llm_temperature,
+                )
+
+            if settings.log_prompts:
+                _write_prompt_log(
+                    self.agent_name,
+                    ts,
+                    system_prompt,
+                    f"{stable_message}\n\n---VARIABLE---\n\n{variable_message}",
+                    response=result,
                 )
             return result
 

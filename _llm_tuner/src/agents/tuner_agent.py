@@ -3,11 +3,26 @@
 from pathlib import Path
 
 from src.agents.base import BaseAgent
-from src.agents.prompt_payload import build_json_message, limit_list, truncate_text
+from src.agents.prompt_payload import (
+    build_json_message,
+    limit_list,
+    split_payload,
+    truncate_text,
+)
 from src.utils.llm_resilience import safe_extract_json
 from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+# Payload keys whose values are identical across all trials and therefore
+# safe to cache once at the start of the experiment.
+_STABLE_KEYS: set[str] = {
+    "target",
+    "goals",
+    "constraints",
+    "candidate_parameters",
+    "knowledge_base_context",
+}
 
 
 class TunerAgent(BaseAgent):
@@ -90,12 +105,22 @@ class TunerAgent(BaseAgent):
             "knowledge_base_context": kb_context,
         }
 
-        user_message = build_json_message(
+        stable_payload, variable_payload = split_payload(payload, _STABLE_KEYS)
+
+        stable_message = build_json_message(
+            "STABLE CONTEXT — cached across trials. Do not repeat this data in your response.",
+            stable_payload,
+        )
+        variable_message = build_json_message(
             "Propose parameter changes to improve performance toward the stated goals. "
             "Use only the candidate_parameters list when selecting changes.",
-            payload,
+            variable_payload,
         )
-        response = await self.invoke(user_message, context={})
+        response = await self.invoke_with_cache(
+            stable_message=stable_message,
+            variable_message=variable_message,
+            context={},
+        )
 
         return safe_extract_json(
             response,
